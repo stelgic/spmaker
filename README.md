@@ -19,8 +19,9 @@ flexible archichture that can be easy deployed on multi exchanges or brokers
 
 [Windows](BUILD_LIBRARIES_WIN.md)
 
-##### BUILD SPMAKER
+##### Build SPMAKER
 
+* On Linux terminal
 ```
 scl enable devtoolset-9 bash
 git clone https://github.com/silvadom/spmaker.git
@@ -29,7 +30,15 @@ cmake . -DG3LOG_ROOT=/usr/local/g3log -DJSON_ROOT=/usr/local/json
 make install
 ```
 
-Others CMAKE libraries root path options:
+* On Windows cmd
+```
+git clone https://github.com/stelgic/qcraftor.git
+cd qcraftor
+cmake . -DG3LOG_ROOT=/usr/local/g3log -DJSON_ROOT=/usr/local/json
+```
+** Open solution qcraftor.sln and set Solution Configuration to "RelWithdebugInfo"
+
+* Others CMAKE libraries root path options:
 ```
 -DJSON_ROOT=path_to_json
 -DOPENSSL_ROOT=path_to_openssl
