@@ -211,7 +211,7 @@ int main(int argc, char** argv)
                 
                 // OPENING A POSITION
                 if(!hasPosition && !hitThreadLimit && hasBalance 
-                    && spread >= 0.03 && !hitRequestLimit)
+                    && spread >= 0.0002 && !hitRequestLimit)
                 {
                     ++usedCounter;
                     resetLimitOn = false;
@@ -247,7 +247,7 @@ int main(int argc, char** argv)
                     });
                 }
                 // CLOSING POSITION
-                else if(hasPosition && spread >= 0.03)
+                else if(hasPosition && spread >= 0.0002)
                 {
                     orderLock.Lock();
                     OrderData order = *openingOrders.find(order);
