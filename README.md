@@ -36,7 +36,8 @@ git clone https://github.com/stelgic/qcraftor.git
 cd qcraftor
 cmake . -DG3LOG_ROOT=/usr/local/g3log -DJSON_ROOT=/usr/local/json
 ```
-** Open solution qcraftor.sln and set Solution Configuration to "RelWithdebugInfo"
+    * Open solution qcraftor.sln 
+    * set Solution Configuration to "RelWithdebugInfo"
 
 * Others CMAKE libraries root path options:
 ```
