@@ -67,8 +67,8 @@ macro( add_connector_module name INSTALL_DEPS)
             ${OPENSSL_ROOT}/lib
             ${CPR_ROOT}/lib
             ${CURL_ROOT}/lib
-            ${JSON_ROOT}/lib64
-            ${G3LOG_ROOT}/lib64
+            ${JSON_ROOT}/lib
+            ${G3LOG_ROOT}/lib
             ${ONETBB_ROOT}/lib64
             ${CURL_ROOT}/lib
         )

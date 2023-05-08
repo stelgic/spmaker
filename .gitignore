@@ -30,7 +30,10 @@
 *.exe
 *.out
 *.app
+*.dir/
+*.vcxproj.*
 
+.vs/
 .vscode/
 build/
 
@@ -39,6 +42,10 @@ CMakeCache.txt
 CMakeFiles/
 Makefile
 bin/
+
+Debug/
+RelWithDebugInfo/
+x64/
 
 cmake_install.cmake
 conan.lock
