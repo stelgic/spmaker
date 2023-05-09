@@ -201,8 +201,7 @@ int main(int argc, char** argv)
                 double spread = (ticker.ask - ticker.bid) * iter->tickSize;
                 
                 // OPENING A POSITION
-                if(!hasPosition && !hitThreadLimit && hasBalance 
-                    && spread >= 0.0002 && !hitRequestLimit)
+                if(!hitThreadLimit && hasBalance && spread >= 0.0002 && !hitRequestLimit)
                 {
                     ++usedCounter;
                     resetLimitOn = false;
@@ -228,42 +227,47 @@ int main(int argc, char** argv)
                         --usedCounter;
                     });
                 }
+                
                 // CLOSING POSITION
-                else if(hasPosition)
+                if(hasPosition)
                 {
                     double posPerc = 0.0;
-                    OrderData order = execManager.CopyOpenOrder(ticker.instrum);
-
-                    // computes position spread using current bid - order entry price
-                    if(order.IsValid())
-                        posPerc = (ticker.bid - order.price) / order.price * 100.0;
-
-                    if((spread >= 0.0002 || std::abs(posPerc) > 0.02) && 
-                        !execManager.IsClosingRequested(order))
+                    flat_set<OrderData> orders;
+                    execManager.CopyPositionOrders(ticker.instrum, orders);
+                    
+                    for(const OrderData& order: orders)
                     {
-                        execManager.ClosingRequest(order);
+                        // computes position spread using current bid - order entry price
+                        if(order.IsValid())
+                            posPerc = (ticker.bid - order.price) / order.price * 100.0;
 
-                        // dispatch create order 5 per request
-                        boost::asio::dispatch(pool, [&, ticker, order]()
+                        if((spread >= 0.0002 || std::abs(posPerc) > 0.02) && 
+                            !execManager.IsClosingRequested(order))
                         {
-                            Filter filter;
-                            filter.instrum = ticker.instrum;
-                            auto iter = filters.find(filter);
+                            execManager.ClosingRequest(order);
 
-                            // create buy open order
-                            Json::Value reduceOrder;
-                            reduceOrder["instrum"] = ticker.instrum;
-                            reduceOrder["orderType"] = "LIMIT";
-                            reduceOrder["timeinforce"] = "GTC";
-                            reduceOrder["side"] = "SELL";
-                            reduceOrder["posSide"] = "BOTH";
-                            reduceOrder["reduceOnly"] = true;
-                            reduceOrder["price"] = ticker.ask - filter.tickSize; // set 5th best price
-                            reduceOrder["quantity"] = order.execQuantity;
-                            
-                            OrderData closeOrder = connector->NewPerpetualOrder(reduceOrder);
-                            execManager.Update(closeOrder, order);
-                        });
+                            // dispatch create order 5 per request
+                            boost::asio::dispatch(pool, [&, ticker, order]()
+                            {
+                                Filter filter;
+                                filter.instrum = ticker.instrum;
+                                auto iter = filters.find(filter);
+
+                                // create buy open order
+                                Json::Value reduceOrder;
+                                reduceOrder["instrum"] = ticker.instrum;
+                                reduceOrder["orderType"] = "LIMIT";
+                                reduceOrder["timeinforce"] = "GTC";
+                                reduceOrder["side"] = "SELL";
+                                reduceOrder["posSide"] = "BOTH";
+                                reduceOrder["reduceOnly"] = true;
+                                reduceOrder["price"] = ticker.ask - filter.tickSize; // set 5th best price
+                                reduceOrder["quantity"] = order.execQuantity;
+                                
+                                OrderData closeOrder = connector->NewPerpetualOrder(reduceOrder);
+                                execManager.Update(closeOrder, order);
+                            });
+                        }
                     }
                 }
 
