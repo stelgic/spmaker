@@ -125,8 +125,7 @@ bool Binance::ResetRequestLimitTimer(int millis)
         resetTimer = endpoint.set_timer(millis, websocketpp::lib::bind(
                         [this](websocketpp::lib::error_code const & ec)
                         {
-                            ORDER_LIMIT_COUNT = 0;
-                            IP_LIMIT_COUNT = 0;
+                            GetMarketInfo(connHdlPtrsMap.begin()->second->GetTag());
                             limitResetOn = {0};
                             LOG_IF(INFO, verbose > 0) << "Request limit lifted!";
                         },

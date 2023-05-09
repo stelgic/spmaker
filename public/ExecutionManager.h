@@ -1,6 +1,9 @@
 #include "IExchange.h"
 #include "SpinLock.h"
+#include <atomic>
+#include <g3log/g3log.hpp>
 
+using namespace g3;
 
 namespace stelgic
 {
@@ -10,7 +13,8 @@ public:
     ExecutionManager(const ExecutionManager &other) = default;
     ExecutionManager &operator=(const ExecutionManager &other) = default;
 public:
-    ExecutionManager() 
+    ExecutionManager(double maxCapital, double riskPercentage, int verbosity) 
+        : capital(maxCapital), riskLimit(riskPercentage), usedCapital(0.0), verbose(verbosity)
     {
         dispatcherMap["NEW0"] = (pfunct)&ExecutionManager::UpdateOpeningPosition;
         dispatcherMap["FILLED0"] = (pfunct)&ExecutionManager::UpdateOpenedPosition;
@@ -143,11 +147,25 @@ public:
         return success;
     }
 
+    double GetRiskCapital()
+    {
+        execLock.Lock();
+        usedCapital = std::min(0.0, usedCapital);
+        double riskCapital = capital * riskLimit;
+        if((capital - usedCapital) < riskCapital)
+            riskCapital = 0.0;
+        execLock.Unlock();
+
+        return riskCapital;
+    }
+
 protected:
     void UpdateOpeningPosition(const OrderData& order, const OrderData& dummy)
     {
         execLock.Lock();
         openOrders.insert(order);
+       
+        usedCapital += (order.quantity * order.price);
         execLock.Unlock();
     }
 
@@ -170,7 +188,6 @@ protected:
         execLock.Lock();
         openOrders.insert(order);
         reduceOrders.insert(order);
-        //if(order.state != "NEW")
         closingRequests.erase(order.lid);
         execLock.Unlock();
     }
@@ -194,7 +211,11 @@ protected:
         postOders.erase(openigOrder);
         postOders.erase(postOrder);
 
+        usedCapital -= (order.execQuantity * order.price);
+        double usedCap = usedCapital;
         execLock.Unlock();
+
+        LOG_IF(INFO, verbose > 0) << "CAPITAL=" << capital << " " << "USED_CAPITAL=" << usedCap;
     }
 
     void UpdateCancelOpening(const OrderData& order, const OrderData& dummy)
@@ -202,7 +223,12 @@ protected:
         execLock.Lock();
         openOrders.erase(order);
         cancelingRequests.erase(order.id);
+        
+        usedCapital -= ((order.quantity - order.execQuantity) * order.price);
+        double usedCap = usedCapital;
         execLock.Unlock();
+
+        LOG_IF(INFO, verbose > 0) << "CAPITAL=" << capital << " " << "USED_CAPITAL=" << usedCap;
     }
 
     void UpdateCancelClosing(const OrderData& order, const OrderData& dummy)
@@ -215,6 +241,11 @@ protected:
     }
 
 private:
+    int verbose;
+    double riskLimit;
+    double capital;
+    double usedCapital;
+
     SpinLock execLock;
     flat_set<OrderData> openOrders;
     flat_set<OrderData> postOders;
