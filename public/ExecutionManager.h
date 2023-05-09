@@ -165,7 +165,7 @@ protected:
         execLock.Unlock();
     }
 
-    void UpdateClosingPosition(const OrderData& postOrder, const OrderData& order)
+    void UpdateClosingPosition(const OrderData& order, const OrderData& postOrder)
     {
         execLock.Lock();
         openOrders.insert(order);
@@ -174,16 +174,17 @@ protected:
         execLock.Unlock();
     }
 
-    void UpdateClosedPosition(const OrderData& postOrder,const OrderData& order)
+    void UpdateClosedPosition(const OrderData& order, const OrderData& postOrder)
     {
         execLock.Lock();
-        openOrders.erase(order);
-        reduceOrders.erase(order);
-        postOders.erase(postOrder);
         closingRequests.erase(order.id);
 
         if(positionsOrderIds.count(order.instrum))
-            positionsOrderIds.at(order.instrum).erase(order.id);
+            positionsOrderIds.at(order.instrum).erase(postOrder.id);
+        
+        openOrders.erase(order);
+        reduceOrders.erase(order);
+        postOders.erase(postOrder);
         execLock.Unlock();
     }
 
