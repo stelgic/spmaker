@@ -231,10 +231,13 @@ int main(int argc, char** argv)
                 // CLOSING POSITION
                 else if(hasPosition)
                 {
+                    double posPerc = 0.0;
                     OrderData order = execManager.CopyOpenOrder(ticker.instrum);
 
                     // computes position spread using current bid - order entry price
-                    double posPerc = (ticker.bid - order.price) / order.price * 100.0;
+                    if(order.IsValid())
+                        posPerc = (ticker.bid - order.price) / order.price * 100.0;
+
                     if((spread >= 0.0002 || std::abs(posPerc) > 0.02) && 
                         !execManager.IsClosingRequested(order))
                     {
