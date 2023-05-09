@@ -3,6 +3,7 @@
 #include <boost/exception/diagnostic_information.hpp>
 
 #include "public/IExchange.h"
+#include "public/ExecutionManager.h"
 #include "public/ModuleLoader.h"
 #include "public/LogHelper.h"
 #include "public/JsonHelper.h"
@@ -146,8 +147,6 @@ int main(int argc, char** argv)
     } 
     
     SpinLock tickerLock;
-    SpinLock orderLock;
-
     bool resetLimitOn = false;
     std::atomic<int> USED_CAPITAL = 0;
     std::atomic<int64_t> counter = {0};
@@ -155,16 +154,12 @@ int main(int argc, char** argv)
     
     std::vector<std::thread> workers;
     flat_set<TickerData> instrumTickers;
-    flat_set<OrderData> openOders;
-    flat_set<OrderData> openingOrders;
-    flat_set<OrderData> closingOrders;
-    flat_set<std::string> cancelingOrders;
-    std::unordered_map<std::string, std::atomic<int>> positions;
+    ExecutionManager execManager;
 
     const auto& filters = connector->GetFilters();
 
     // get all open orders
-    openOders = connector->GetPerpetualOpenOrders();
+    execManager.UpdateOpenOrders(connector->GetPerpetualOpenOrders());
 
     /** ################################################################
      * @brief Consume ticker data and implement spread market maker
@@ -189,12 +184,8 @@ int main(int argc, char** argv)
             for(size_t j=0; j<n; ++j)
             {
                 TickerData ticker(tickers[j]);
-                if(positions.count(ticker.instrum) == 0 || positions.at(ticker.instrum) < 0)
-                {
-                    positions[ticker.instrum] = {0};
-                }
 
-                bool hasPosition = positions.at(ticker.instrum);
+                bool hasPosition = execManager.HasPosition(ticker.instrum);
                 bool hasBalance = (CAPITAL - USED_CAPITAL) > RISK_CAPITAL;
                 bool hitThreadLimit = usedCounter > NUM_THREADS;
                 bool hitRequestLimit = connector->IsRequestLimitHit();
@@ -232,35 +223,25 @@ int main(int argc, char** argv)
                         postOrder["quantity"] = (RISK_CAPITAL / ticker.bid);
                         
                         OrderData order = connector->NewPerpetualOrder(postOrder);
-
-                        orderLock.Lock();
-                        if(order.state == "PARTIALLY_FILLED" || order.state == "FILLED")
-                        {
-                            openingOrders.insert(order);
-                            ++positions.at(order.instrum);
-                        }
-                        else if(order.state == "NEW")
-                            openOders.insert(order);
-                        orderLock.Unlock();
-
+                        execManager.Update(order, order);
+                        
                         --usedCounter;
                     });
                 }
                 // CLOSING POSITION
-                else if(hasPosition && spread >= 0.0002)
+                else if(hasPosition)
                 {
-                    orderLock.Lock();
-                    OrderData order = *openingOrders.find(order);
-                    orderLock.Unlock();
+                    OrderData order = execManager.CopyOpenOrder(ticker.instrum);
 
                     // computes position spread using current bid - order entry price
-                    double posSpread = (ticker.bid - order.price);
-                    if(abs(posSpread) >= 0.2 && closingOrders.count(order) == 0)
+                    double posPerc = (ticker.bid - order.price) / order.price * 100.0;
+                    if((spread >= 0.0002 || std::abs(posPerc) > 0.02) && 
+                        !execManager.IsClosingRequested(order))
                     {
-                        closingOrders.insert(order);
+                        execManager.ClosingRequest(order);
 
                         // dispatch create order 5 per request
-                        boost::asio::dispatch(pool, [&, ticker, order, posSpread]()
+                        boost::asio::dispatch(pool, [&, ticker, order]()
                         {
                             Filter filter;
                             filter.instrum = ticker.instrum;
@@ -278,23 +259,7 @@ int main(int argc, char** argv)
                             reduceOrder["quantity"] = order.execQuantity;
                             
                             OrderData closeOrder = connector->NewPerpetualOrder(reduceOrder);
-                            if(closeOrder.state == "FILLED")
-                            {
-                                orderLock.Lock();
-                                openingOrders.erase(order);
-                                closingOrders.erase(order);
-                                --positions.at(order.instrum);
-                                orderLock.Unlock();
-
-                                USED_CAPITAL -= RISK_CAPITAL;
-                            }
-                            else if(closeOrder.state == "NEW" || closeOrder.state == "PARTIALLY_FILLED")
-                            {
-                                orderLock.Lock();
-                                closingOrders.erase(order);
-                                closingOrders.insert(closeOrder);
-                                orderLock.Unlock();
-                            }
+                            execManager.Update(closeOrder, order);
                         });
                     }
                 }
@@ -333,51 +298,7 @@ int main(int argc, char** argv)
                 // dispatch create order 5 per request
                 boost::asio::dispatch(pool, [&, order]()
                 {
-                    orderLock.Lock();
-                    if(order.state == "PARTIALLY_FILLED")
-                    {
-                        if(!order.closePosition)
-                        {
-                            openOders.insert(order);
-                            if(openingOrders.erase(order))
-                            {
-                                openingOrders.erase(order);
-                                --positions.at(order.instrum);
-                            }
-                            openingOrders.insert(order);
-                            ++positions.at(order.instrum);
-                        }
-                        else
-                            closingOrders.insert(order);
-                    }
-                    else if(order.state == "FILLED")
-                    {
-                        if(!order.closePosition)
-                        {
-                            openOders.erase(order);
-                            openingOrders.erase(order);
-                            openingOrders.insert(order);
-                            --positions.at(order.instrum);
-                        }
-                        else
-                        {
-                            openingOrders.erase(order);
-                            closingOrders.erase(order);
-                            --positions.at(order.instrum);
-                            USED_CAPITAL -= RISK_CAPITAL;
-                        }
-                    }
-                    else if(order.state == "CANCELED")
-                    {
-                        if(!order.closePosition)
-                        {
-                            openOders.erase(order);
-                        }
-                        else
-                            closingOrders.erase(order);
-                    }
-                    
-                    orderLock.Unlock();
+                    execManager.Update(order, order);
                 });
 
                 LOG_IF(INFO, verbosity > 0) << order;
@@ -401,22 +322,18 @@ int main(int argc, char** argv)
         {
             epoch = std::chrono::system_clock::now().time_since_epoch().count();
 
-            orderLock.Lock();
-            flat_set<OrderData> orders(openOders.begin(), openOders.end());
-            orders.insert(closingOrders.begin(), closingOrders.end());
-            orderLock.Unlock();
+            flat_set<OrderData> orders; 
+            execManager.CopyOpenOrders(orders);
 
             for(OrderData& order: orders)
             {
                 auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                     std::chrono::milliseconds(epoch) - std::chrono::milliseconds(order.timestamp));
 
-                bool cancelRequest = cancelingOrders.count(order.id);
+                bool cancelRequest = execManager.IsCancelRequested(order);
                 if(!cancelRequest && order.state == "NEW" && elapsed.count() > ORDER_TIMEOUT)
                 {
-                    orderLock.Lock();
-                    cancelingOrders.insert(order.id);
-                    orderLock.Unlock();
+                    execManager.CancelRequest(order);
 
                     // dispatch create order 5 per request
                     boost::asio::dispatch(pool, [&, order]()
@@ -437,41 +354,19 @@ int main(int argc, char** argv)
 
                         if(canceled)
                         {
-                            orderLock.Lock();
+                            order.state = "CANCELED";
+                            execManager.Update(order, order);
+                            
                             if(!order.closePosition)
-                            {
-                                openOders.erase(order);
                                 USED_CAPITAL -= RISK_CAPITAL;
-                            }
-                            else
-                            {
-                                closingOrders.erase(order);
-                            }
-                            orderLock.Unlock();
                         }
 
-                        orderLock.Lock();
-                        cancelingOrders.erase(order.id);
-                        orderLock.Unlock();
+                        execManager.ClearCancelRequest(order);
                     });
-                }
-
-                if(order.closePosition && order.state == "FILLED")
-                {
-                    orderLock.Lock();
-                    if(openingOrders.count(order))
-                    {
-                        openingOrders.erase(order);
-                        --positions.at(order.instrum);
-                    }
-                    closingOrders.erase(order);
-                    orderLock.Unlock();
                 }
                 else
                 {
-                    orderLock.Lock();
-                    closingOrders.erase(order);
-                    orderLock.Unlock();
+                    execManager.Update(order, order);
                 }
             }
         }
