@@ -86,10 +86,10 @@ public:
 
     void CopyPositionOrders(const std::string& instrum, flat_set<OrderData>& orders)
     {
-        if (HasPosition(instrum))
+        if (positionsOrderIds.count(instrum))
         {
             execLock.Lock();
-            for(const std::string id: positionsOrderIds.at(instrum))
+            for(const std::string& id: positionsOrderIds.at(instrum))
             {
                 OrderData order;
                 order.id = id;
@@ -170,21 +170,30 @@ protected:
         execLock.Lock();
         openOrders.insert(order);
         reduceOrders.insert(order);
-        closingRequests.erase(order.id);
+        //if(order.state != "NEW")
+        closingRequests.erase(order.lid);
         execLock.Unlock();
     }
 
     void UpdateClosedPosition(const OrderData& order, const OrderData& postOrder)
     {
         execLock.Lock();
-        closingRequests.erase(order.id);
+        closingRequests.erase(order.lid);
 
         if(positionsOrderIds.count(order.instrum))
-            positionsOrderIds.at(order.instrum).erase(postOrder.id);
-        
+        {
+            positionsOrderIds.at(order.instrum).erase(order.id);
+            positionsOrderIds.at(order.instrum).erase(order.lid);
+        }
+
         openOrders.erase(order);
         reduceOrders.erase(order);
+
+        OrderData openigOrder;
+        openigOrder.id = order.lid;
+        postOders.erase(openigOrder);
         postOders.erase(postOrder);
+
         execLock.Unlock();
     }
 
@@ -200,7 +209,7 @@ protected:
     {
         execLock.Lock();
         cancelingRequests.erase(order.id);
-        closingRequests.erase(order.id);
+        closingRequests.erase(order.lid);
         openOrders.erase(order);
         execLock.Unlock();
     }

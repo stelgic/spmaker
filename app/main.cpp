@@ -200,6 +200,9 @@ int main(int argc, char** argv)
             {
                 TickerData ticker(tickers[j]);
 
+                if(USED_CAPITAL < 0)
+                    USED_CAPITAL = {0};
+
                 bool hasPosition = execManager.HasPosition(ticker.instrum);
                 bool hasBalance = (CAPITAL - USED_CAPITAL) > RISK_CAPITAL;
                 bool hitThreadLimit = usedCounter > NUM_THREADS;
@@ -214,7 +217,7 @@ int main(int argc, char** argv)
                  * #######################################################
                  */
                 double spread = (ticker.ask - ticker.bid) / ticker.ask * 100.0;
-                
+                                
                 // OPENING A POSITION
                 if(!hitThreadLimit && hasBalance && spread >= 0.002 && !hitRequestLimit)
                 {
@@ -237,8 +240,10 @@ int main(int argc, char** argv)
                         postOrder["quantity"] = (RISK_CAPITAL / ticker.bid);
                         
                         OrderData order = connector->NewPerpetualOrder(postOrder);
-                        execManager.Update(order, order);
-                        
+                        if(order.IsValid())
+                            execManager.Update(order, order);
+                        else
+                            USED_CAPITAL -= RISK_CAPITAL;
                         --usedCounter;
                     });
                 }
@@ -253,11 +258,12 @@ int main(int argc, char** argv)
                     for(const OrderData& order: orders)
                     {
                         // computes position spread using current bid - order entry price
-                        posPerc = (ticker.bid - order.price) / order.price * 100.0;
-
+                        posPerc = (ticker.bid - order.price) / ticker.bid * 100.0;
+                        
                         if((spread >= 0.002 || std::abs(posPerc) > 0.003) && 
                             !execManager.IsClosingRequested(order))
                         {
+                            //++usedCounter;
                             execManager.ClosingRequest(order);
 
                             // dispatch create order 5 per request
@@ -275,11 +281,15 @@ int main(int argc, char** argv)
                                 reduceOrder["side"] = "SELL";
                                 reduceOrder["posSide"] = "BOTH";
                                 reduceOrder["reduceOnly"] = true;
+                                reduceOrder["clOrderId"] = order.id;
                                 reduceOrder["price"] = ticker.ask - filter.tickSize; // set 5th best price
                                 reduceOrder["quantity"] = order.execQuantity;
                                 
                                 OrderData closeOrder = connector->NewPerpetualOrder(reduceOrder);
-                                execManager.Update(closeOrder, order);
+                                if(order.IsValid())
+                                    execManager.Update(closeOrder, order);
+
+                               // --usedCounter;
                             });
                         }
                     }
@@ -320,10 +330,15 @@ int main(int argc, char** argv)
                 boost::asio::dispatch(pool, [&, order]()
                 {
                     execManager.Update(order, order);
-                });
 
-                if(order.closePosition && order.state == "FILLED")
-                    USED_CAPITAL -= RISK_CAPITAL;
+                    if((order.closePosition && order.state == "FILLED") ||
+                        (!order.closePosition && order.state == "CANCELED") || 
+                        (!order.closePosition && order.state == "EXPIRED"))
+                    {
+                        USED_CAPITAL -= RISK_CAPITAL;
+                        LOG_IF(INFO, verbosity > 0) << "CAPITAL=" << CAPITAL << " " << "USED_CAPITAL=" << USED_CAPITAL;
+                    }
+                });
 
                 LOG_IF(INFO, verbosity > 0) << order;
             }
@@ -376,6 +391,8 @@ int main(int argc, char** argv)
                             
                             if(!order.closePosition)
                                 USED_CAPITAL -= RISK_CAPITAL;
+
+                            LOG_IF(INFO, verbosity > 0) << "CAPITAL=" << CAPITAL << " " << "USED_CAPITAL=" << USED_CAPITAL;
                         }
 
                         execManager.ClearCancelRequest(order);
@@ -384,6 +401,12 @@ int main(int argc, char** argv)
                 else
                 {
                     execManager.Update(order, order);
+
+                    if(order.closePosition && order.state == "FILLED")
+                    {
+                        USED_CAPITAL -= RISK_CAPITAL;
+                        LOG_IF(INFO, verbosity > 0) << "CAPITAL=" << CAPITAL << " " << "USED_CAPITAL=" << USED_CAPITAL;
+                    }
                 }
             }
         }
