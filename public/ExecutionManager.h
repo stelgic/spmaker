@@ -54,7 +54,14 @@ public:
     void ClosingRequest(const OrderData& order)
     {
         execLock.Lock();
-        reduceOrders.insert(order);
+        closingRequests.insert(order.id);
+        execLock.Unlock();
+    }
+
+    void ClearClosingRequest(const OrderData& order)
+    {
+        execLock.Lock();
+        closingRequests.erase(order.id);
         execLock.Unlock();
     }
 
@@ -117,7 +124,7 @@ public:
     bool IsClosingRequested(const OrderData& order)
     {
         execLock.Lock();
-        bool success = reduceOrders.count(order);
+        bool success = closingRequests.count(order.id);
         execLock.Unlock();
         return success;
     }
@@ -154,8 +161,8 @@ protected:
     {
         execLock.Lock();
         openOrders.insert(order);
-        reduceOrders.erase(postOrder);
         reduceOrders.insert(order);
+        closingRequests.erase(order.id);
         execLock.Unlock();
     }
 
@@ -164,8 +171,9 @@ protected:
         execLock.Lock();
         openOrders.erase(order);
         reduceOrders.erase(order);
-        reduceOrders.erase(postOrder);
         postOders.erase(postOrder);
+        closingRequests.erase(order.id);
+
         if(positionsOrderIds.count(order.instrum))
             positionsOrderIds.at(order.instrum).erase(order.id);
         execLock.Unlock();
@@ -185,6 +193,7 @@ protected:
         openOrders.erase(order);
         reduceOrders.erase(order);
         cancelingRequests.erase(order.id);
+        closingRequests.erase(order.id);
         execLock.Unlock();
     }
 
@@ -193,6 +202,7 @@ private:
     flat_set<OrderData> openOrders;
     flat_set<OrderData> postOders;
     flat_set<OrderData> reduceOrders;
+    flat_set<std::string> closingRequests;
     flat_set<std::string> cancelingRequests;
     flat_map<std::string, flat_set<PositionData>> openPositions;
     flat_map<std::string, flat_set<std::string>> positionsOrderIds;
