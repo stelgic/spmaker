@@ -20,6 +20,8 @@ public:
         dispatcherMap["FILLED1"] = (pfunct)&ExecutionManager::UpdateClosedPosition;
         dispatcherMap["CANCELED0"] = (pfunct)&ExecutionManager::UpdateCancelOpening;
         dispatcherMap["CANCELED1"] = (pfunct)&ExecutionManager::UpdateCancelClosing;
+        dispatcherMap["EXPIRED0"] = (pfunct)&ExecutionManager::UpdateCancelOpening;
+        dispatcherMap["EXPIRED1"] = (pfunct)&ExecutionManager::UpdateCancelClosing;
     }
 
     virtual ~ExecutionManager() {}
@@ -30,8 +32,11 @@ public:
         event.append(primary.state);
         event.append(std::to_string((int)primary.closePosition));
 
-        pfunct caller = dispatcherMap[event];
-        (this->*caller)(primary, secondary);
+        if(dispatcherMap.count(event))
+        {
+            pfunct caller = dispatcherMap[event];
+            (this->*caller)(primary, secondary);
+        }
     }
 
     void UpdateOpenOrders(const flat_set<OrderData>& orders)
@@ -54,7 +59,14 @@ public:
     void ClosingRequest(const OrderData& order)
     {
         execLock.Lock();
-        reduceOrders.insert(order);
+        closingRequests.insert(order.id);
+        execLock.Unlock();
+    }
+
+    void ClearClosingRequest(const OrderData& order)
+    {
+        execLock.Lock();
+        closingRequests.erase(order.id);
         execLock.Unlock();
     }
 
@@ -117,7 +129,7 @@ public:
     bool IsClosingRequested(const OrderData& order)
     {
         execLock.Lock();
-        bool success = reduceOrders.count(order);
+        bool success = closingRequests.count(order.id);
         execLock.Unlock();
         return success;
     }
@@ -142,10 +154,13 @@ protected:
     {
         execLock.Lock();
         postOders.insert(order);
-        openOrders.erase(order);
         if(positionsOrderIds.count(order.instrum) == 0)
             positionsOrderIds.emplace(order.instrum, flat_set<std::string>());
         positionsOrderIds.at(order.instrum).insert(order.id);
+        
+        if(order.state == "FILLED")
+            openOrders.erase(order);
+        
         execLock.Unlock();
     }
 
@@ -153,8 +168,8 @@ protected:
     {
         execLock.Lock();
         openOrders.insert(order);
-        reduceOrders.erase(postOrder);
         reduceOrders.insert(order);
+        closingRequests.erase(order.id);
         execLock.Unlock();
     }
 
@@ -163,8 +178,9 @@ protected:
         execLock.Lock();
         openOrders.erase(order);
         reduceOrders.erase(order);
-        reduceOrders.erase(postOrder);
         postOders.erase(postOrder);
+        closingRequests.erase(order.id);
+
         if(positionsOrderIds.count(order.instrum))
             positionsOrderIds.at(order.instrum).erase(order.id);
         execLock.Unlock();
@@ -184,6 +200,7 @@ protected:
         openOrders.erase(order);
         reduceOrders.erase(order);
         cancelingRequests.erase(order.id);
+        closingRequests.erase(order.id);
         execLock.Unlock();
     }
 
@@ -192,6 +209,7 @@ private:
     flat_set<OrderData> openOrders;
     flat_set<OrderData> postOders;
     flat_set<OrderData> reduceOrders;
+    flat_set<std::string> closingRequests;
     flat_set<std::string> cancelingRequests;
     flat_map<std::string, flat_set<PositionData>> openPositions;
     flat_map<std::string, flat_set<std::string>> positionsOrderIds;
