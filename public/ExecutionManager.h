@@ -197,10 +197,9 @@ protected:
     void UpdateCancelClosing(const OrderData& order, const OrderData& dummy)
     {
         execLock.Lock();
-        openOrders.erase(order);
-        reduceOrders.erase(order);
         cancelingRequests.erase(order.id);
         closingRequests.erase(order.id);
+        openOrders.erase(order);
         execLock.Unlock();
     }
 
