@@ -214,7 +214,7 @@ public:
     std::string side; // BUY, SELL
     std::string posSide; // SHORT, LONG
     std::string orderType;
-    std::string state;
+    mutable std::string state;
     std::string timeInForce; // GTC, ICO, FOK, GTX
     std::string marginMode;
     Json::Value attrs; // additional values
