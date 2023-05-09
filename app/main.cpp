@@ -148,13 +148,12 @@ int main(int argc, char** argv)
     
     SpinLock tickerLock;
     bool resetLimitOn = false;
-    std::atomic<int> USED_CAPITAL = 0;
     std::atomic<int64_t> counter = {0};
     std::atomic<int> usedCounter = {0};
     
     std::vector<std::thread> workers;
     flat_set<TickerData> instrumTickers;
-    ExecutionManager execManager;
+    ExecutionManager execManager(CAPITAL, 0.2, verbosity);
 
     const auto& filters = connector->GetFilters();
 
@@ -200,11 +199,8 @@ int main(int argc, char** argv)
             {
                 TickerData ticker(tickers[j]);
 
-                if(USED_CAPITAL < 0)
-                    USED_CAPITAL = {0};
-
                 bool hasPosition = execManager.HasPosition(ticker.instrum);
-                bool hasBalance = (CAPITAL - USED_CAPITAL) > RISK_CAPITAL;
+                bool hasBalance = (execManager.GetRiskCapital() > 0);
                 bool hitThreadLimit = usedCounter > NUM_THREADS;
                 bool hitRequestLimit = connector->IsRequestLimitHit();
 
@@ -222,8 +218,6 @@ int main(int argc, char** argv)
                 if(!hitThreadLimit && hasBalance && spread >= 0.002 && !hitRequestLimit)
                 {
                     ++usedCounter;
-                    resetLimitOn = false;
-                    USED_CAPITAL += RISK_CAPITAL;
 
                     // dispatch create order 5 per request
                     boost::asio::dispatch(pool, [&, ticker]()
@@ -237,13 +231,12 @@ int main(int argc, char** argv)
                         postOrder["posSide"] = "BOTH";
                         postOrder["postOnly"] = true;
                         postOrder["price"] = (ticker.bid + iter->stepSize); // set 5th best price
-                        postOrder["quantity"] = (RISK_CAPITAL / ticker.bid);
+                        postOrder["quantity"] = (execManager.GetRiskCapital() / ticker.bid);
                         
                         OrderData order = connector->NewPerpetualOrder(postOrder);
                         if(order.IsValid())
                             execManager.Update(order, order);
-                        else
-                            USED_CAPITAL -= RISK_CAPITAL;
+                        
                         --usedCounter;
                     });
                 }
@@ -330,14 +323,6 @@ int main(int argc, char** argv)
                 boost::asio::dispatch(pool, [&, order]()
                 {
                     execManager.Update(order, order);
-
-                    if((order.closePosition && order.state == "FILLED") ||
-                        (!order.closePosition && order.state == "CANCELED") || 
-                        (!order.closePosition && order.state == "EXPIRED"))
-                    {
-                        USED_CAPITAL -= RISK_CAPITAL;
-                        LOG_IF(INFO, verbosity > 0) << "CAPITAL=" << CAPITAL << " " << "USED_CAPITAL=" << USED_CAPITAL;
-                    }
                 });
 
                 LOG_IF(INFO, verbosity > 0) << order;
@@ -388,11 +373,6 @@ int main(int argc, char** argv)
                         if(canceled)
                         {
                             execManager.Update(order, order);
-                            
-                            if(!order.closePosition)
-                                USED_CAPITAL -= RISK_CAPITAL;
-
-                            LOG_IF(INFO, verbosity > 0) << "CAPITAL=" << CAPITAL << " " << "USED_CAPITAL=" << USED_CAPITAL;
                         }
 
                         execManager.ClearCancelRequest(order);
@@ -401,12 +381,6 @@ int main(int argc, char** argv)
                 else
                 {
                     execManager.Update(order, order);
-
-                    if(order.closePosition && order.state == "FILLED")
-                    {
-                        USED_CAPITAL -= RISK_CAPITAL;
-                        LOG_IF(INFO, verbosity > 0) << "CAPITAL=" << CAPITAL << " " << "USED_CAPITAL=" << USED_CAPITAL;
-                    }
                 }
             }
         }

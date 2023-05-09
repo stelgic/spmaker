@@ -23,7 +23,7 @@ public:
     bool IsInitialized() override;
     bool IsOnline() override;
     bool IsRequestLimitHit() override;
-    bool ResetRequestLimitTimer(int seconds) override;
+    bool ResetRequestLimitTimer(int millis) override;
     void TestConnectivity() override;
 
     flat_set<Filter>& GetFilters() override;

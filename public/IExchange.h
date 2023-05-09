@@ -136,11 +136,11 @@ public:
     /**
      * @brief start a time to reset the limit after n period
      * 
-     * @param seconds 
+     * @param millis 
      * @return true 
      * @return false 
      */
-    virtual bool ResetRequestLimitTimer(int seconds) = 0;
+    virtual bool ResetRequestLimitTimer(int millis) = 0;
 
     /**
      * @brief compute average time on ping send and pong received
