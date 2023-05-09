@@ -351,7 +351,6 @@ int main(int argc, char** argv)
 
                         if(canceled)
                         {
-                            order.state = "CANCELED";
                             execManager.Update(order, order);
                             
                             if(!order.closePosition)
