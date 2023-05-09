@@ -30,7 +30,9 @@
 *.exe
 *.out
 *.app
+*.pdb
 *.dir/
+*.vcxproj
 *.vcxproj.*
 
 .vs/
