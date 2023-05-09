@@ -84,20 +84,21 @@ public:
         execLock.Unlock();
     }
 
-    OrderData CopyOpenOrder(const std::string& instrum)
+    void CopyPositionOrders(const std::string& instrum, flat_set<OrderData>& orders)
     {
-        OrderData order;
         if (HasPosition(instrum))
         {
             execLock.Lock();
-            order.id = *positionsOrderIds.at(instrum).begin();
-            auto it = postOders.find(order);
-            if(it != postOders.end())
-                order = *it;
+            for(const std::string id: positionsOrderIds.at(instrum))
+            {
+                OrderData order;
+                order.id = id;
+                auto it = postOders.find(order);
+                if(it != postOders.end())
+                    orders.insert(*it);
+            }
             execLock.Unlock();
         }
-        
-        return order;
     }
 
     void CopyOpenOrders(flat_set<OrderData>& orders)
