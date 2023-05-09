@@ -26,7 +26,8 @@ public:
 
     void Update(const OrderData& primary, const OrderData& secondary)
     {
-        std::string event(primary.state);
+        std::string event;
+        event.append(primary.state);
         event.append(std::to_string((int)primary.closePosition));
 
         pfunct caller = dispatcherMap[event];

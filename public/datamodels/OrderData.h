@@ -236,8 +236,8 @@ inline std::ostream & operator<<(std::ostream &out, const OrderData& orderData)
         << std::setw(6) << orderData.orderType 
         << std::setw(8) << std::setprecision(8) << orderData.price
         << std::setw(7) << std::setprecision(8) << orderData.quantity
-        << std::setw(5) << std::setprecision(8) << orderData.execQuantity
-        << std::setw(13) << orderData.state
+        << std::setw(8) << std::setprecision(8) << orderData.execQuantity
+        << std::setw(18) << orderData.state
         << std::setw(14) << orderData.timestamp
         << std::setw(7) << orderData.assetClass
         << std::setw(5) << orderData.exchange;
