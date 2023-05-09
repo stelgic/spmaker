@@ -341,18 +341,12 @@ int main(int argc, char** argv)
                     // dispatch create order 5 per request
                     boost::asio::dispatch(pool, [&, order]()
                     {
-                        bool canceled = false;
-                        if(connector->CancelPerpetualOrder(order.instrum, order.id))
-                        {
-                            canceled = true;
-                        }
-                        else
+                        bool canceled = connector->CancelPerpetualOrder(order.instrum, order.id);
+                        
+                        if(!canceled)
                         {
                             OrderData queryOrder = connector->GetPerpetualOrder(order.instrum, order.id);
-                            if(!queryOrder.IsValid())
-                            {
-                                canceled = true;
-                            }
+                            canceled = !queryOrder.IsValid();
                         }
 
                         if(canceled)
