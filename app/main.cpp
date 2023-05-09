@@ -341,7 +341,7 @@ int main(int argc, char** argv)
                     // dispatch create order 5 per request
                     boost::asio::dispatch(pool, [&, order]()
                     {
-                        bool canceled = connector->CancelPerpetualOrder(order.instrum, order.id));
+                        bool canceled = connector->CancelPerpetualOrder(order.instrum, order.id);
                         
                         if(!canceled)
                         {
