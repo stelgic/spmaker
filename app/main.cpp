@@ -158,6 +158,21 @@ int main(int argc, char** argv)
 
     const auto& filters = connector->GetFilters();
 
+    // check if need to subscribe all symbols
+    Json::Value& publicParams = connParams["binance"]["websocket"]["public"];
+    for(const Json::Value& item: publicParams["instruments"])
+    {
+        if(item.asString() == "*")
+        {
+            for(const Filter& filter: filters)
+            {
+                publicParams["instruments"].append(filter.instrum);
+                LOG_IF(INFO, verbosity > 2) << filter.instrum;
+            }
+            break;
+        }
+    }
+
     // get all open orders
     execManager.UpdateOpenOrders(connector->GetPerpetualOpenOrders());
 
@@ -198,10 +213,10 @@ int main(int argc, char** argv)
                  * @brief Implement vVery simple strategy based on spread
                  * #######################################################
                  */
-                double spread = (ticker.ask - ticker.bid) * iter->tickSize;
+                double spread = (ticker.ask - ticker.bid) / ticker.ask * 100.0;
                 
                 // OPENING A POSITION
-                if(!hitThreadLimit && hasBalance && spread >= 0.0002 && !hitRequestLimit)
+                if(!hitThreadLimit && hasBalance && spread >= 0.002 && !hitRequestLimit)
                 {
                     ++usedCounter;
                     resetLimitOn = false;
@@ -227,7 +242,7 @@ int main(int argc, char** argv)
                         --usedCounter;
                     });
                 }
-                
+
                 // CLOSING POSITION
                 if(hasPosition)
                 {
@@ -238,10 +253,9 @@ int main(int argc, char** argv)
                     for(const OrderData& order: orders)
                     {
                         // computes position spread using current bid - order entry price
-                        if(order.IsValid())
-                            posPerc = (ticker.bid - order.price) / order.price * 100.0;
+                        posPerc = (ticker.bid - order.price) / order.price * 100.0;
 
-                        if((spread >= 0.0002 || std::abs(posPerc) > 0.02) && 
+                        if((spread >= 0.002 || std::abs(posPerc) > 0.003) && 
                             !execManager.IsClosingRequested(order))
                         {
                             execManager.ClosingRequest(order);
@@ -307,6 +321,9 @@ int main(int argc, char** argv)
                 {
                     execManager.Update(order, order);
                 });
+
+                if(order.closePosition && order.state == "FILLED")
+                    USED_CAPITAL -= RISK_CAPITAL;
 
                 LOG_IF(INFO, verbosity > 0) << order;
             }
