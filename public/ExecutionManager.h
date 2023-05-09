@@ -142,7 +142,8 @@ protected:
     {
         execLock.Lock();
         postOders.insert(order);
-        openOrders.erase(order);
+        if(order.state == "FILLED")
+            openOrders.erase(order);
         if(positionsOrderIds.count(order.instrum) == 0)
             positionsOrderIds.emplace(order.instrum, flat_set<std::string>());
         positionsOrderIds.at(order.instrum).insert(order.id);
