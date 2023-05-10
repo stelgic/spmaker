@@ -150,7 +150,7 @@ public:
     double GetRiskCapital()
     {
         execLock.Lock();
-        usedCapital = std::min(0.0, usedCapital);
+        usedCapital = (usedCapital < 0) ? 0.0: usedCapital;
         double riskCapital = capital * riskLimit;
         if((capital - usedCapital) < riskCapital)
             riskCapital = 0.0;
@@ -159,14 +159,22 @@ public:
         return riskCapital;
     }
 
+    void UpdateUsedCapital(double value)
+    {
+        execLock.Lock();
+        usedCapital += value;
+        double usedCap = usedCapital;
+        execLock.Unlock();
+
+        LOG_IF(INFO, verbose > 1) << "CAPITAL=" << capital << " " << "USED_CAPITAL=" << usedCap;
+    }
+
 protected:
     void UpdateOpeningPosition(const OrderData& order, const OrderData& dummy)
     {
         execLock.Lock();
         openOrders.insert(order);
-       
-        usedCapital += (order.quantity * order.price);
-        execLock.Unlock();
+        execLock.Unlock();        
     }
 
     void UpdateOpenedPosition(const OrderData& order, const OrderData& dummy)
@@ -188,7 +196,8 @@ protected:
         execLock.Lock();
         openOrders.insert(order);
         reduceOrders.insert(order);
-        closingRequests.erase(order.lid);
+        //closingRequests.erase(order.lid);
+        usedCapital -= (order.execQuantity * order.price);
         execLock.Unlock();
     }
 
