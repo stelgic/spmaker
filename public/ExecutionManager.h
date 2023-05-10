@@ -150,7 +150,7 @@ public:
     double GetRiskCapital()
     {
         execLock.Lock();
-        usedCapital = std::min(0.0, usedCapital);
+        usedCapital = (usedCapital < 0) ? 0.0: usedCapital;
         double riskCapital = capital * riskLimit;
         if((capital - usedCapital) < riskCapital)
             riskCapital = 0.0;
