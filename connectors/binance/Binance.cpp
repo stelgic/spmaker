@@ -125,7 +125,8 @@ bool Binance::ResetRequestLimitTimer(int millis)
         resetTimer = endpoint.set_timer(millis, websocketpp::lib::bind(
                         [this](websocketpp::lib::error_code const & ec)
                         {
-                            GetMarketInfo(connHdlPtrsMap.begin()->second->GetTag());
+                            ORDER_LIMIT_COUNT = {0};
+                            IP_LIMIT_COUNT = {0};
                             limitResetOn = {0};
                             LOG_IF(INFO, verbose > 0) << "Request limit lifted!";
                         },
@@ -1250,7 +1251,7 @@ OrderData Binance::NewPerpetualOrder(const Json::Value& params, bool isdummy)
                                 payload, postData, headers, true, privacy);
         if(response.first != 200)
         {
-            LOG_IF(WARNING, verbose > 0) << response.second << "\n" << payload.content;
+            LOG_IF(WARNING, verbose > 1) << response.second << "\n" << payload.content;
             return ordData;
         }
 
@@ -1662,7 +1663,7 @@ bool Binance::CancelPerpetualOrder(const std::string& instrum, std::string id, s
         sucess = response.first == 200;
         if(response.first != 200)
         {
-            LOG_IF(WARNING, verbose > 0) << response.second;
+            LOG_IF(WARNING, verbose > 1) << response.second;
         }
     }
     catch(std::exception& e)

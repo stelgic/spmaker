@@ -242,7 +242,7 @@ int main(int argc, char** argv)
                 }
 
                 // CLOSING POSITION
-                if(hasPosition)
+                if(hasPosition && !hitRequestLimit)
                 {
                     double posPerc = 0.0;
                     flat_set<OrderData> orders;
@@ -294,6 +294,8 @@ int main(int argc, char** argv)
                     connector->ResetRequestLimitTimer(61000);
                     resetLimitOn = true;
                 }
+                
+                resetLimitOn = hitRequestLimit;
             }
         }
 
