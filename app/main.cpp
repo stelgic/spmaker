@@ -373,15 +373,12 @@ int main(int argc, char** argv)
                             canceled = !queryOrder.IsValid();
                         }
 
-                        if(canceled)
-                        {
-                            execManager.Update(order, order);
-                        }
-
                         execManager.ClearCancelRequest(order);
                     });
                 }
-                else if(order.state == "FILLED" || order.state == "CANCELED" || order.state == "EXPIRED")
+                else if(order.state == "FILLED" || 
+                    order.state == "CANCELED" || 
+                    order.state == "EXPIRED")
                 {
                     execManager.Update(order, order);
                 }
