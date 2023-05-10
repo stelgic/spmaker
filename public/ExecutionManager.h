@@ -188,7 +188,7 @@ protected:
         execLock.Lock();
         openOrders.insert(order);
         reduceOrders.insert(order);
-        closingRequests.erase(order.lid);
+        //closingRequests.erase(order.lid);
         execLock.Unlock();
     }
 
