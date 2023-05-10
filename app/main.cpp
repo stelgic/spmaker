@@ -218,11 +218,14 @@ int main(int argc, char** argv)
                 if(!hitThreadLimit && hasBalance && spread >= 0.002 && !hitRequestLimit)
                 {
                     ++usedCounter;
+                    double riskAmount = execManager.GetRiskCapital();
+                    execManager.UpdateUsedCapital(riskAmount);
 
                     // dispatch create order 5 per request
                     boost::asio::dispatch(pool, [&, ticker]()
                     {
                         double price = (ticker.bid + iter->stepSize);
+                        
                         // create buy open order
                         Json::Value postOrder;
                         postOrder["instrum"] = ticker.instrum;
@@ -232,11 +235,13 @@ int main(int argc, char** argv)
                         postOrder["posSide"] = "BOTH";
                         postOrder["postOnly"] = true;
                         postOrder["price"] = price; // set 5th best price
-                        postOrder["quantity"] = (execManager.GetRiskCapital() / price);
+                        postOrder["quantity"] = (riskAmount / price);
                         
                         OrderData order = connector->NewPerpetualOrder(postOrder);
                         if(order.IsValid())
                             execManager.Update(order, order);
+                        else
+                            execManager.UpdateUsedCapital(-riskAmount);
                         
                         --usedCounter;
                     });
