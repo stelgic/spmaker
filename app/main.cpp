@@ -381,7 +381,7 @@ int main(int argc, char** argv)
                         execManager.ClearCancelRequest(order);
                     });
                 }
-                else
+                else if(order.state == "FILLED" || order.state == "CANCELED" || order.state == "EXPIRED")
                 {
                     execManager.Update(order, order);
                 }
