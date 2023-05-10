@@ -15,8 +15,8 @@ using namespace stelgic;
 
 int verbosity = 1;
 int NUM_THREADS = 8;
-int CAPITAL = 5000;
-int RISK_CAPITAL = 1000;
+int capital = 5000;
+double riskLimit = 0.1;
 int ORDER_TIMEOUT = 1; // seconds
 
 IExchange* connector = nullptr;
@@ -40,8 +40,8 @@ bool getCommandLineArgs(int argc, char** argv)
 
     desc.add_options()
     ("help,h", "produce help message")
-    ("risk,r", po::value<int>(&RISK_CAPITAL)->default_value(1000), "capital to risk per trade")
-    ("capital,c", po::value<int>(&CAPITAL)->default_value(6000), "max capital in USD")
+    ("risk,r", po::value<double>(&riskLimit)->default_value(0.1), "capital to risk percentage per trade")
+    ("capital,c", po::value<int>(&capital)->default_value(6000), "max capital in USD")
     ("threads,t", po::value<int>(&NUM_THREADS)->default_value(8), "num threads to process data")
     ("timeout,x", po::value<int>(&ORDER_TIMEOUT)->default_value(2), "cancel order if not filled in n seconds")
     ("verbose,v", po::value<int>(&verbosity)->default_value(1), "Logging verbosity level (0,1,2)");
@@ -153,7 +153,7 @@ int main(int argc, char** argv)
     
     std::vector<std::thread> workers;
     flat_set<TickerData> instrumTickers;
-    ExecutionManager execManager(CAPITAL, 0.2, verbosity);
+    ExecutionManager execManager(capital, riskLimit, verbosity);
 
     const auto& filters = connector->GetFilters();
 
@@ -222,6 +222,7 @@ int main(int argc, char** argv)
                     // dispatch create order 5 per request
                     boost::asio::dispatch(pool, [&, ticker]()
                     {
+                        double price = (ticker.bid + iter->stepSize);
                         // create buy open order
                         Json::Value postOrder;
                         postOrder["instrum"] = ticker.instrum;
@@ -230,8 +231,8 @@ int main(int argc, char** argv)
                         postOrder["side"] = "BUY";
                         postOrder["posSide"] = "BOTH";
                         postOrder["postOnly"] = true;
-                        postOrder["price"] = (ticker.bid + iter->stepSize); // set 5th best price
-                        postOrder["quantity"] = (execManager.GetRiskCapital() / ticker.bid);
+                        postOrder["price"] = price; // set 5th best price
+                        postOrder["quantity"] = (execManager.GetRiskCapital() / price);
                         
                         OrderData order = connector->NewPerpetualOrder(postOrder);
                         if(order.IsValid())

@@ -189,6 +189,7 @@ protected:
         openOrders.insert(order);
         reduceOrders.insert(order);
         //closingRequests.erase(order.lid);
+        usedCapital -= (order.execQuantity * order.price);
         execLock.Unlock();
     }
 

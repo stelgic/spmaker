@@ -55,7 +55,7 @@ cmake . -DG3LOG_ROOT=/usr/local/g3log -DJSON_ROOT=/usr/local/json
 
 ```
 cd build/bin
-./spmaker --risk 1000 --capital 5000 --threads 8 --timeout 2 -v 1
+./spmaker --risk 0.2 --capital 5000 --threads 8 --timeout 2 -v 1
 ```
 
 
