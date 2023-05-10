@@ -159,17 +159,22 @@ public:
         return riskCapital;
     }
 
+    void UpdateUsedCapital(double value)
+    {
+        execLock.Lock();
+        usedCapital += value;
+        double usedCap = usedCapital;
+        execLock.Unlock();
+
+        LOG_IF(INFO, verbose > 1) << "CAPITAL=" << capital << " " << "USED_CAPITAL=" << usedCap;
+    }
+
 protected:
     void UpdateOpeningPosition(const OrderData& order, const OrderData& dummy)
     {
         execLock.Lock();
         openOrders.insert(order);
-       
-        usedCapital += (order.quantity * order.price);
-        double usedCap = usedCapital;
-        execLock.Unlock();
-
-        LOG_IF(INFO, verbose > 0) << "CAPITAL=" << capital << " " << "USED_CAPITAL=" << usedCap;
+        execLock.Unlock();        
     }
 
     void UpdateOpenedPosition(const OrderData& order, const OrderData& dummy)
