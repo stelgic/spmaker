@@ -166,7 +166,7 @@ public:
         double usedCap = usedCapital;
         execLock.Unlock();
 
-        LOG_IF(INFO, verbose > 0) << "CAPITAL=" << capital << " " << "USED_CAPITAL=" << usedCap;
+        LOG_IF(INFO, verbose > 1) << "CAPITAL=" << capital << " " << "USED_CAPITAL=" << usedCap;
     }
 
 protected:
