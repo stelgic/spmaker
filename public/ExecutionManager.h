@@ -166,7 +166,10 @@ protected:
         openOrders.insert(order);
        
         usedCapital += (order.quantity * order.price);
+        double usedCap = usedCapital;
         execLock.Unlock();
+
+        LOG_IF(INFO, verbose > 0) << "CAPITAL=" << capital << " " << "USED_CAPITAL=" << usedCap;
     }
 
     void UpdateOpenedPosition(const OrderData& order, const OrderData& dummy)
