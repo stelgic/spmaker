@@ -222,6 +222,7 @@ int main(int argc, char** argv)
                     // dispatch create order 5 per request
                     boost::asio::dispatch(pool, [&, ticker]()
                     {
+                        double price = (ticker.bid + iter->stepSize);
                         // create buy open order
                         Json::Value postOrder;
                         postOrder["instrum"] = ticker.instrum;
@@ -230,8 +231,8 @@ int main(int argc, char** argv)
                         postOrder["side"] = "BUY";
                         postOrder["posSide"] = "BOTH";
                         postOrder["postOnly"] = true;
-                        postOrder["price"] = (ticker.bid + iter->stepSize); // set 5th best price
-                        postOrder["quantity"] = (execManager.GetRiskCapital() / ticker.bid);
+                        postOrder["price"] = price; // set 5th best price
+                        postOrder["quantity"] = (execManager.GetRiskCapital() / price);
                         
                         OrderData order = connector->NewPerpetualOrder(postOrder);
                         if(order.IsValid())
