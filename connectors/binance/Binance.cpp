@@ -314,6 +314,7 @@ ConnState Binance::Connect(const Json::Value& params)
             // set header api key
             std::string apikey = secrets[assetClass][privacy].get("apikey", "").asString();
             con->replace_header("X-MBX-APIKEY", apikey);
+            con->replace_header("Accept-Encoding", "gzip,deflate,zlib");
 
             endpoint.connect(con);
             if(connPtrsMap.count(privacy) == 0)
