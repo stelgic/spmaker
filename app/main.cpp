@@ -315,7 +315,6 @@ int main(int argc, char** argv)
      */
     workers.push_back(std::thread([&]()
     {
-        boost::asio::thread_pool pool(4);
         ConcurrentQueue<OrderData> orderQueue;
         connector->BindOrderQueue(&orderQueue);
 
@@ -328,16 +327,11 @@ int main(int argc, char** argv)
                 OrderData order(orders[j]);
                 
                 // dispatch create order 5 per request
-                boost::asio::dispatch(pool, [&, order]()
-                {
-                    execManager.Update(order, order);
-                });
+                execManager.Update(order, order);
 
                 LOG_IF(INFO, verbosity > 0) << order;
             }
         }
-
-        pool.join();
     }));
 
 
