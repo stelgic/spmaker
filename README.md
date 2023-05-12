@@ -36,6 +36,9 @@ git clone https://github.com/stelgic/qcraftor.git
 cd qcraftor
 cmake . -DG3LOG_ROOT=/usr/local/g3log -DJSON_ROOT=/usr/local/json
 ```
+
+With visual studio 2019 or 2022
+
     * Open solution qcraftor.sln 
     * set Solution Configuration to "RelWithdebugInfo"
 
@@ -58,4 +61,7 @@ cd build/bin
 ./spmaker --risk 0.2 --capital 5000 --threads 8 --timeout 2 -v 1
 ```
 
+#### License
+
+* Licensed under [CC BY-NC-ND 4.0](LICENSE.md)
 

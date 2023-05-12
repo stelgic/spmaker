@@ -1,27 +1,43 @@
-#include "Binance.h"
+#include "Bybit.h"
 #include <g3log/g3log.hpp>
 #include <boost/iostreams/filtering_streambuf.hpp>
 #include <boost/iostreams/copy.hpp>
 
 namespace stelgic
 {
-Binance::Binance() : recvWindow(60000), pingInterval(60000), 
+Bybit::Bybit() : recvWindow(5000), pingInterval(60000), 
     ORDERS_LIMIT(300), REQUEST_LIMIT(300)
 {
-    dispatcherMap["trade"] = (pfunct)&Binance::TradesParser;
-    dispatcherMap["kline"] = (pfunct)&Binance::CandlesParser;
-    dispatcherMap["depthUpdate"] = (pfunct)&Binance::DepthParser;
-    dispatcherMap["bookTicker"] = (pfunct)&Binance::TickersParser;
-    dispatcherMap["ORDER_TRADE_UPDATE"] = (pfunct)&Binance::OrdersParser;
-    dispatcherMap["ACCOUNT_UPDATE"] = (pfunct)&Binance::PositionsParser;
-    dispatcherMap["listenKeyExpired"] = (pfunct)&Binance::ListenKeyParser;
+    dispatcherMap["publicTrade"] = (pfunct)&Bybit::TradesParser;
+    dispatcherMap["kline"] = (pfunct)&Bybit::CandlesParser;
+    dispatcherMap["orderbook"] = (pfunct)&Bybit::DepthParser;
+    dispatcherMap["tickers"] = (pfunct)&Bybit::TickersParser;
+    dispatcherMap["user.order"] = (pfunct)&Bybit::OrdersParser;
+    dispatcherMap["user.position"] = (pfunct)&Bybit::PositionsParser;
+    dispatcherMap["auth"] = (pfunct)&Bybit::Authentication;
+
+    edgeModesMap.emplace(0, "BOTH");
+    edgeModesMap.emplace(1, "LONG");
+    edgeModesMap.emplace(2, "SHORT");
+
+    paramMapping["BOTH"]= 0;
+    paramMapping["LONG"]= 1;
+    paramMapping["SHORT"]= 2;
+
+    paramMapping["GTC"]= "GoodTillCancel";
+    paramMapping["IOC"]= "ImmediateOrCancel";
+    paramMapping["FOK"]= "FillOrKill";
+
+    paramMapping["spot"]= "spot";
+    paramMapping["future"]= "linear";
+    paramMapping["option"]= "option";
 
     timestamp = 0;
     MAX_BATCH_ORDERS = 5;
     liveMode = LiveState::Stopped;
 }
 
-Binance::~Binance() 
+Bybit::~Bybit() 
 {
     Close();
 
@@ -29,13 +45,12 @@ Binance::~Binance()
         worker.join();
 }
 
-void Binance::Init(const Json::Value& params, int logLevel, g3::LogWorker* logWorker)
+void Bybit::Init(const Json::Value& params, int logLevel, g3::LogWorker* logWorker)
 {
 #if defined(_WIN32) || defined(_WIN64)
     if(logWorker != nullptr)
         g3::initializeLogging(logWorker);
 #endif 
-        
     connParams = params;
     verbose = logLevel;
         
@@ -54,7 +69,7 @@ void Binance::Init(const Json::Value& params, int logLevel, g3::LogWorker* logWo
     int numSession = connParams.get("numSessions", 4).asInt();
     for(int i=0; i < numSession; ++i)
         sessionPool.enqueue(std::make_shared<cpr::Session>());
-    
+
     for(const Json::Value& item: connParams["websocket"]["private"]["subscribe"])
     {
         Json::Value info = GetMarketInfo(item.asString());
@@ -63,7 +78,7 @@ void Binance::Init(const Json::Value& params, int logLevel, g3::LogWorker* logWo
     }
 }
 
-void Binance::Close()
+void Bybit::Close()
 {    
     if(liveMode == LiveState::Stopped)
         return;
@@ -86,17 +101,17 @@ void Binance::Close()
     liveMode = LiveState::Stopped;
 }
 
-bool Binance::IsInitialized()
+bool Bybit::IsInitialized()
 {
     return liveMode == LiveState::Started || liveMode == LiveState::Running;
 }
 
-void Binance::Stop()
+void Bybit::Stop()
 { 
     exitThread = {1};
 }
 
-void Binance::Reconnect()
+void Bybit::Reconnect()
 {
     connFlag.test_and_set(std::memory_order_release);
 
@@ -112,17 +127,17 @@ void Binance::Reconnect()
     connFlag.clear(std::memory_order_acquire); // release
 }
 
-bool Binance::IsOnline()
+bool Bybit::IsOnline()
 {
     return liveMode == LiveState::Running;
 }
 
-bool Binance::IsRequestLimitHit()
+bool Bybit::IsRequestLimitHit()
 {
     return (ORDERS_LIMIT - ORDER_LIMIT_COUNT ) <= 50 || (REQUEST_LIMIT - IP_LIMIT_COUNT) <= 1;
 }
 
-bool Binance::ResetRequestLimitTimer(int millis)
+bool Bybit::ResetRequestLimitTimer(int millis)
 {
     if(!limitResetOn)
     {
@@ -141,7 +156,7 @@ bool Binance::ResetRequestLimitTimer(int millis)
     return limitResetOn;
 }
 
-void Binance::TestConnectivity()
+void Bybit::TestConnectivity()
 {
     ConnHandler::ptr connHdlPtr = nullptr;
     for(auto& item: connHdlPtrsMap)
@@ -194,22 +209,22 @@ void Binance::TestConnectivity()
     LOG(INFO) << oss.str();
 }
 
-Json::Value& Binance::GetConfiguration()
+Json::Value& Bybit::GetConfiguration()
 {
     return connParams;
 }
 
-void* Binance::GetMessageQueue(const std::string& tag)
+void* Bybit::GetMessageQueue(const std::string& tag)
 {
     return nullptr;
 }
 
-ConnState Binance::Connect(const Json::Value& params)
+ConnState Bybit::Connect(const Json::Value& params)
 {
     ConnState conState;
     if(!params.isMember("websocket"))
     {
-        LOG_IF(WARNING, verbose > 0) << "Missing websocket params in binance!";
+        LOG_IF(WARNING, verbose > 0) << "Missing websocket params in Bybit!";
         return ConnState::Failed;
     }
 
@@ -227,17 +242,8 @@ ConnState Binance::Connect(const Json::Value& params)
 
             std::string connKey(privacy);
             connKey.append("_").append(assetClass);
-            // subscribe to user data stream if private endpoint
-            if(privacy == "private")
-            {
-                if(!GetListenKey(assetClass, privacy))
-                    return ConnState::Failed;
-                
-                std::string listenKey = listenKeys.at(connKey);
-                url.append("/").append(listenKey);
-            }
-
-            LOG_IF(INFO, verbose > 1) << "Connecting to " 
+            
+            LOG_IF(INFO, verbose > 0) << "Connecting to " 
                 << privacy << " " << assetClass << " " << url;
 
             websocketpp::lib::error_code ec;
@@ -301,18 +307,8 @@ ConnState Binance::Connect(const Json::Value& params)
                 numThreads = std::max(numThreads, std::thread::hardware_concurrency()-4);
 
             workers.push_back(StreamParser(connHdlPtr->GetQueue(), numThreads));
-
-            // set header api expire date
-            std::stringstream ssexpire;
-            ssexpire << Utils::GetSeconds(24*3600);
-            con->replace_header("timestamp", ssexpire.str());
             
-            // set header api signature
-            std::string query = url;
-            size_t pos = url.find_last_of('?');
-            if(pos != url.npos)
-                query = url.substr(pos+1);
-                        
+            // set header api key
             con->replace_header("Accept-Encoding", "gzip,deflate,zlib");
 
             endpoint.connect(con);
@@ -339,13 +335,18 @@ ConnState Binance::Connect(const Json::Value& params)
 
             LOG_IF(INFO, verbose > 2) << "Connected to " << privacy 
                                                 << " " << assetClass << " " << url;
+
+            if(privacy == "private" && Authentication(connKey, assetClass, privacy))
+            {
+                LOG_IF(WARNING, verbose > 0) << "Successful authenticated to private " << assetClass;
+            }
         }
     }
 
     return conState;
 }
 
-bool Binance::Send(const std::string& key, const std::string& message)
+bool Bybit::Send(const std::string& key, const std::string& message)
 {
     websocketpp::lib::error_code ec;
     
@@ -364,11 +365,55 @@ bool Binance::Send(const std::string& key, const std::string& message)
     return true;
 }
 
-bool Binance::Subscribe(const std::string& key, 
+bool Bybit::Authentication(const std::string& connKey, 
+    const std::string& assetClass, const std::string& privacy)
+{
+    bool success = false;
+    Json::Value payload;
+    Json::StreamWriterBuilder builder;
+    builder["indentation"] = "";
+    
+    authenticationMap[connKey] = {0};
+    int64_t expires = Utils::GetMilliseconds(10000);
+
+    const Json::Value& secrets = connParams["secrets"];
+    std::string apikey = secrets[privacy][assetClass].get("apikey", "").asString();
+    std::string apisecret = secrets[privacy][assetClass].get("apisecret", "").asString();
+
+    std::string query("GET/realtime");
+    query.append(std::to_string(expires));
+    std::string signature = AuthUtils::GetSignature(apisecret, query);
+    
+    payload["op"] = "auth";
+    //payload["req_id"] = std::to_string(Utils::GetSeconds());
+    payload["args"] = Json::Value(Json::arrayValue);
+
+    payload["args"].append(apikey);
+    payload["args"].append(expires);
+    payload["args"].append(signature);
+
+    std::string msg(Json::writeString(builder, payload));
+    LOG_IF(INFO, verbose > 0) << "AUTHENTICATION: " << msg;
+    if(Send(connKey, msg))
+    {
+        int wait = 3;
+        while(!authenticationMap.at(connKey) && wait > 0)
+        {
+            --wait;
+            std::this_thread::sleep_for(std::chrono::seconds{1});
+        }
+
+        success = authenticationMap.at(connKey);
+    }
+    
+    return success;
+}
+
+bool Bybit::Subscribe(const std::string& key, 
     const std::string& market, const Json::Value& symbols, 
     const Json::Value& channels, std::string privacy)
 {
-    LOG_IF(INFO, verbose > 0) << "Subscribing to Binance " << privacy << " channels...";
+    LOG_IF(INFO, verbose > 1) << "Subscribing to Bybit " << privacy << " channels...";
     int num = 0;
     for(const auto& member: channels)
     {
@@ -380,9 +425,9 @@ bool Binance::Subscribe(const std::string& key,
         Json::Value payload;
         
         builder["indentation"] = "";
-        payload["method"] = "SUBSCRIBE";
-        payload["id"] = std::time(nullptr);
-        payload["params"] = Json::Value(Json::arrayValue);
+        payload["op"] = "subscribe";
+        payload["req_id"] = std::to_string(Utils::GetSeconds());
+        payload["args"] = Json::Value(Json::arrayValue);
 
         if(privacy == "public")
         {
@@ -400,17 +445,17 @@ bool Binance::Subscribe(const std::string& key,
             {
                 std::string name(symbol.asString());
                 std::stringstream sstag;
-                std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+                std::transform(name.begin(), name.end(), name.begin(), ::toupper);
 
-                sstag << name << "@" << sstopics.str();
-                payload["params"].append(sstag.str());
+                sstag << sstopics.str() << "." << name;
+                payload["args"].append(sstag.str());
                 success = true;
             }
         }
         else
         {
             std::string channel = member.asString();
-            payload["params"].append(channel);
+            payload["args"].append(channel);
             success = true;
         }
 
@@ -425,7 +470,7 @@ bool Binance::Subscribe(const std::string& key,
     return num > 0;
 }
 
-bool Binance::Subscribe(const Json::Value& params)
+bool Bybit::Subscribe(const Json::Value& params)
 {
     int i = 0;
     for(const std::string& privacy: connParams["websocket"].getMemberNames())
@@ -437,60 +482,32 @@ bool Binance::Subscribe(const Json::Value& params)
             std::string connKey = privacy;
             connKey.append("_").append(assetClass);
             ConnState connState = connHdlPtrsMap.at(connKey)->GetStatus();
-            
-            if(connState == ConnState::Opened && privacy == "public")
+
+            if (connState == ConnState::Opened)
             {
-                if (connState == ConnState::Opened && privacy == "public" &&
-                    Subscribe(connKey, assetClass, tag["instruments"], tag["channels"]))
-                {
-                    ++i;
-                }
+                i += Subscribe(connKey, assetClass, tag["instruments"], tag["channels"], privacy);
             }
         }
     }
     return i > 0;
 }
 
-bool Binance::SendKeepAlive(const std::string& key)
+bool Bybit::SendKeepAlive(const std::string& key)
 {
     bool success = false;
     try
     {
         if(key.find("private") != key.npos)
         {
-            std::string path;
-            cpr::Payload payload{};
-            std::string postData;
-            cpr::Header headers{};
-            std::string privacy("public");
-            std::string assetClass("spot");
+            Json::Value payload;
+            Json::StreamWriterBuilder builder;
+            builder["indentation"] = "";
 
-            if(key.find("private") != key.npos)
-                privacy = "private";
+            payload["op"] = "ping";
+            payload["req_id"] = std::to_string(Utils::GetSeconds());
 
-            int pos = key.find(privacy);
-            if(pos != key.npos)
-                assetClass = key.substr(privacy.length()+1);
-                        
-            if(assetClass == "future")
-                path = "fapi/v1/listenKey";
-            else if(assetClass == "option")
-                path = "eapi/v1/listenKey";
-            else
-            {
-                path = "api/v3/userDataStream";
-                payload.AddPair({"listenKey", listenKeys.at(key)});
-            }
-
-            endpoint.ping(connHdlPtrsMap.at(key)->GetHandler(), "0x9");
-
-            std::pair<int,std::string> response = HttpPut(connParams, assetClass, 
-                                                        path, payload, postData, 
-                                                        headers, false, privacy);
-            if(response.first == 200)
-                success = true;
-            else
-                LOG_IF(WARNING, verbose > 0) << response.second;
+            std::string msg(Json::writeString(builder, payload));
+            Send(key, msg);
         }
     }
     catch(websocketpp::exception& e)
@@ -500,7 +517,7 @@ bool Binance::SendKeepAlive(const std::string& key)
     return success;
 }
 
-std::thread Binance::KeepAlive()
+std::thread Bybit::KeepAlive()
 {
     return std::thread([this]()
     {
@@ -546,10 +563,7 @@ std::thread Binance::KeepAlive()
                         endpoint.connect(item.second->GetConnection());
                         pingTime = 15000;
 
-                        if(item.first.find("public") != item.first.npos)
-                        {
-                            Subscribe(connParams);
-                        }
+                        Subscribe(connParams);
                     }
                 }
                 catch(const websocketpp::exception& e)
@@ -567,31 +581,38 @@ std::thread Binance::KeepAlive()
     });
 }
 
-void Binance::HttpCommon(
+void Bybit::HttpCommon(
     const std::string &baseurl, const Json::Value& configs, 
     const std::string& function, cpr::Payload& payload, 
     const std::string& postData, cpr::Header& headers, bool signing)
 {
     int64_t epoch = Utils::GetMilliseconds(0);
-    std::string nonce = Utils::GetUrandom(8);
-
-    headers.emplace("X-MBX-APIKEY", configs["apikey"].asString());
-    headers.emplace("Content-Type","application/x-www-form-urlencoded;charset=UTF-8");
+    
+    headers.emplace("X-BAPI-API-KEY", configs["apikey"].asString());
+    headers.emplace("X-BAPI-RECV-WINDOW", std::to_string(recvWindow));
+    headers.emplace("X-BAPI-TIMESTAMP", std::to_string(epoch));
+    headers.emplace("Content-Type","application/json");
         
     if(signing)
     {
-        payload.AddPair({"recvWindow", std::to_string(recvWindow)});
-        payload.AddPair({"timestamp", std::to_string(epoch)});
+        // param_str= str(time_stamp) + api_key + recv_window + payload
+        std::string content(std::to_string(epoch));
+        content.append(configs["apikey"].asString());
+        content.append(std::to_string(recvWindow));
+        if(!postData.empty())
+            content.append(postData);
+        else
+            content.append(payload.content);
 
-        std::string content = payload.content;
         std::string signature = AuthUtils::GetSignature(
             configs["apisecret"].asString(), content);
             
-        payload.AddPair({"signature", signature});
+        headers.emplace("X-BAPI-SIGN", signature);
+        headers.emplace("X-BAPI-SIGN-TYPE", "2");
     }
 }
 
-IntStrPair Binance::HttpPost(const Json::Value& configs, 
+IntStrPair Bybit::HttpPost(const Json::Value& configs, 
     const std::string& tag, const std::string& function, 
     cpr::Payload& payload, const std::string& postData, 
     cpr::Header headers, bool signing, std::string privacy)
@@ -612,7 +633,7 @@ IntStrPair Binance::HttpPost(const Json::Value& configs,
     headers.emplace("Accept-Encoding", "gzip,deflate,zlib");
 
     session->SetUrl({baseurl + url});
-    session->SetOption(cpr::Body(content));
+    session->SetOption(cpr::Body(dataPost));
     session->SetVerifySsl(cpr::VerifySsl(false));
     session->SetHeader(headers);
 
@@ -620,25 +641,25 @@ IntStrPair Binance::HttpPost(const Json::Value& configs,
     cpr::Response r = session->Post();
     sessionPool.enqueue(session);
 
-    if(r.header.count("X-MBX-USED-WEIGHT-1M"))
-        IP_LIMIT_COUNT.store(std::stol(r.header["X-MBX-USED-WEIGHT-1M"]));
-    if(r.header.count("X-MBX-ORDER-COUNT-1M"))
-        ORDER_LIMIT_COUNT.store(std::stol(r.header["X-MBX-ORDER-COUNT-1M"]));
+    if(r.header.count("X-Bapi-Limit-Status"))
+    {
+        REQUEST_LIMIT.store(std::stol(r.header["X-Bapi-Limit"]));
+        IP_LIMIT_COUNT.store(REQUEST_LIMIT - std::stol(r.header["X-Bapi-Limit-Status"]));
+    }
+    
+    if(r.status_code == 403)
+        IP_LIMIT_COUNT = REQUEST_LIMIT.load();
 
-    if(r.status_code == 429)
-        IP_LIMIT_COUNT = REQUEST_LIMIT;
-
-    LOG_IF(INFO, verbose > 1) << "POST: " 
+    LOG_IF(INFO, verbose > 1)
         << "POST: " << baseurl + url << "?" 
         << cpr::Body(dataPost) << "\n"
         << r.status_code 
-        << " X-MBX-USED-WEIGHT=" << IP_LIMIT_COUNT
-        << " X-MBX-ORDER-COUNT=" << ORDER_LIMIT_COUNT;
+        << " IP_LIMIT_COUNT=" << IP_LIMIT_COUNT;
 
     return  std::make_pair(r.status_code, r.text);
 }
 
-IntStrPair Binance::HttpGet(
+IntStrPair Bybit::HttpGet(
     const Json::Value& configs, 
     const std::string& tag, const std::string& function, 
     cpr::Payload& payload, const std::string& postData, 
@@ -665,10 +686,14 @@ IntStrPair Binance::HttpGet(
     cpr::Response r = session->Get();
     sessionPool.enqueue(session);
 
-    if(r.header.count("X-MBX-USED-WEIGHT-1M"))
-        IP_LIMIT_COUNT.store(std::stol(r.header["X-MBX-USED-WEIGHT-1M"]));
-    if(r.header.count("X-MBX-ORDER-COUNT-1M"))
-        ORDER_LIMIT_COUNT.store(std::stol(r.header["X-MBX-ORDER-COUNT-1M"]));
+    if(r.header.count("X-Bapi-Limit-Status"))
+    {
+        REQUEST_LIMIT.store(std::stol(r.header["X-Bapi-Limit"]));
+        IP_LIMIT_COUNT.store(REQUEST_LIMIT - std::stol(r.header["X-Bapi-Limit-Status"]));
+    }
+
+    if(r.status_code == 403)
+        IP_LIMIT_COUNT = REQUEST_LIMIT.load();
 
     LOG_IF(INFO, verbose > 1) 
         << "GET: " << baseurl + url << "\n"
@@ -677,7 +702,7 @@ IntStrPair Binance::HttpGet(
     return  std::make_pair(r.status_code, r.text);
 }
 
-IntStrPair Binance::HttpPut(
+IntStrPair Bybit::HttpPut(
     const Json::Value& configs, 
     const std::string& tag, const std::string& function, 
     cpr::Payload& payload, const std::string& postData, 
@@ -692,10 +717,15 @@ IntStrPair Binance::HttpPut(
 
     HttpCommon(baseurl, secrets, function, payload, postData, headers, signing);
 
-    std::string postBody = payload.content;
+    std::string content = payload.content;
+    std::string dataPost = postData;
+    if(postData.empty())
+        dataPost.append(content);
+
+    headers.emplace("Accept-Encoding", "gzip,deflate,zlib");
     
     session->SetUrl({baseurl + url});
-    session->SetOption(cpr::Body(postBody));
+    session->SetOption(cpr::Body(dataPost));
     session->SetVerifySsl(cpr::VerifySsl(false));
     session->SetHeader(headers);
 
@@ -703,19 +733,23 @@ IntStrPair Binance::HttpPut(
     cpr::Response r = session->Put();
     sessionPool.enqueue(session);
 
-    if(r.header.count("X-MBX-USED-WEIGHT-1M"))
-        IP_LIMIT_COUNT.store(std::stol(r.header["X-MBX-USED-WEIGHT-1M"]));
-    if(r.header.count("X-MBX-ORDER-COUNT-1M"))
-        ORDER_LIMIT_COUNT.store(std::stol(r.header["X-MBX-ORDER-COUNT-1M"]));
+    if(r.header.count("X-Bapi-Limit-Status"))
+    {
+        REQUEST_LIMIT.store(std::stol(r.header["X-Bapi-Limit"]));
+        IP_LIMIT_COUNT.store(REQUEST_LIMIT - std::stol(r.header["X-Bapi-Limit-Status"]));
+    }
+
+    if(r.status_code == 403)
+        IP_LIMIT_COUNT = REQUEST_LIMIT.load();
 
     LOG_IF(INFO, verbose > 1)
-        << "PUT: " << baseurl + url << "?" << cpr::Body(postBody) <<  "\n"
+        << "PUT: " << baseurl + url << "?" << cpr::Body(dataPost) <<  "\n"
         << r.status_code << " " << r.header["content-type"];
 
     return  std::make_pair(r.status_code, r.text);
 }
 
-IntStrPair Binance::HttpDelete(
+IntStrPair Bybit::HttpDelete(
     const Json::Value& configs, 
     const std::string& tag, const std::string& function, 
     cpr::Payload& payload, const std::string& postData, 
@@ -744,10 +778,14 @@ IntStrPair Binance::HttpDelete(
     cpr::Response r = session->Delete();
     sessionPool.enqueue(session);
 
-    if(r.header.count("X-MBX-USED-WEIGHT-1M"))
-        IP_LIMIT_COUNT.store(std::stol(r.header["X-MBX-USED-WEIGHT-1M"]));
-    if(r.header.count("X-MBX-ORDER-COUNT-10S"))
-        ORDER_LIMIT_COUNT.store(std::stol(r.header["X-MBX-ORDER-COUNT-10S"]));
+    if(r.header.count("X-Bapi-Limit-Status"))
+    {
+        REQUEST_LIMIT.store(std::stol(r.header["X-Bapi-Limit"]));
+        IP_LIMIT_COUNT.store(REQUEST_LIMIT - std::stol(r.header["X-Bapi-Limit-Status"]));
+    }
+
+    if(r.status_code == 403)
+        IP_LIMIT_COUNT = REQUEST_LIMIT.load();
 
     LOG_IF(INFO, verbose > 1) 
         << "DELETE: " << baseurl + url << "\n"
@@ -756,7 +794,7 @@ IntStrPair Binance::HttpDelete(
     return  std::make_pair(r.status_code, r.text);
 }
 
-Json::Value Binance::GetMarketInfo(const std::string& assetClass)
+Json::Value Bybit::GetMarketInfo(const std::string& assetClass)
 {
     // parse response
     std::string errs;
@@ -767,11 +805,12 @@ Json::Value Binance::GetMarketInfo(const std::string& assetClass)
 
     cpr::Payload payload{};
     std::string postData;
-    std::string querypath("api/v3/exchangeInfo");
+    std::string querypath = assetClass;
+    querypath.append("v3/public/symbols");
     if(assetClass == "future")
-        querypath = "fapi/v1/exchangeInfo";
-    else if(assetClass == "option")
-        querypath = "eapi/v1/exchangeInfo";
+        querypath = "derivatives/v3/public/instruments-info";
+
+    payload.AddPair({"category", paramMapping.get(assetClass, "").asString()});
         
     auto response = HttpGet(connParams, assetClass, querypath, payload, postData);
     if(response.first == 200)
@@ -785,127 +824,22 @@ Json::Value Binance::GetMarketInfo(const std::string& assetClass)
     return data;
 }
 
-flat_set<Filter>& Binance::GetFilters()
+flat_set<Filter>& Bybit::GetFilters()
 {
     return filters;
 }
-
-bool Binance::GetListenKey(const std::string& assetClass, const std::string& privacy, bool keepAlive)
-{
-    bool success = false;
-    std::string path;
-    cpr::Payload payload{};
-    std::string postData;
-    cpr::Header headers{};
-
-    if(assetClass == "future")
-        path = "fapi/v1/listenKey";
-    else if(assetClass == "option")
-        path = "eapi/v1/listenKey";
-    else
-        path = "api/v3/userDataStream";
-
-    std::string key(privacy);
-    key.append("_").append(assetClass);
-    if(listenKeys.count(key) && !keepAlive)
-    {
-        auto response = HttpDelete(connParams, assetClass, path, payload, postData, headers, true, privacy);
-        if(response.first != 200)
-            LOG_IF(WARNING, verbose > 2) << "ERROR: " << response.second;
-        else
-            std::this_thread::sleep_for(std::chrono::seconds(15));
-    }
-
-    auto response = HttpPost(connParams, assetClass, path, payload, postData, headers, true, privacy);
-    if(response.first != 200)
-    {
-        LOG_IF(WARNING, verbose > 1) << "ERROR: " << response.second;
-        return success;
-    }
-
-    std::string errs;
-    Json::Value data;
-    std::unique_ptr<Json::CharReader> reader;
-    Json::CharReaderBuilder rbuilder;
-    reader.reset(rbuilder.newCharReader());
-
-    const std::string& msg = response.second;
-    if(reader->parse(msg.c_str(), msg.c_str() + msg.size(),&data, &errs))
-    {
-        if(data.isMember("listenKey"))
-        {
-            std::string listenKey = data["listenKey"].asString();
-            listenKeys.emplace(key, listenKey);
-            success = true;
-        }
-    }
-
-    return success;
-}
     
-flat_set<BalanceData> Binance::GetSpotAccountBalances(
+flat_set<BalanceData> Bybit::GetSpotAccountBalances(
     const std::set<std::string>& currencies)
 {
     BalanceData balance;
     flat_set<BalanceData> balances;
 
-    Json::Value data;
-    cpr::Payload payload{}; 
-    std::string postData;
-    const std::string tag("spot");
-    const std::string querypath("api/v3/balance");
-    
-    auto response = HttpGet(connParams, tag, querypath, payload, postData);
-
-    if(response.first != 200)
-    {
-        LOG_IF(WARNING, verbose > 2) << response.second;
-        return balances;
-    }
-    
-    // parse response
-    std::string errs;
-    std::unique_ptr<Json::CharReader> reader;
-    Json::CharReaderBuilder rbuilder;
-    reader.reset(rbuilder.newCharReader());
-    
-    try
-    {
-        const std::string& msg = response.second;
-        if(reader->parse(msg.c_str(), msg.c_str() + msg.size(),&data, &errs))
-        {
-            if(data.isMember("balances"))
-            {
-                for(Json::Value& item: data["balances"])
-                {
-                    balance.exchange = "binance";
-                    balance.asset = item["asset"].asString();
-                    balance.available = std::stod(item["free"].asString());
-                    balance.locked = std::stod(item["locked"].asString());
-                    balances.insert(balance);
-                }
-            }
-        }
-    }
-    catch(std::exception& e)
-    {
-        LOG_IF(WARNING, verbose > 2) << e.what();
-    }
-
-    return balances;
-}
-
-flat_set<BalanceData> Binance::GetPerpetualAccountBalances(
-    const std::set<std::string>& currencies)
-{
-    BalanceData balance;
-    flat_set<BalanceData> balances;
-
-    Json::Value data;
+    Json::Value records;
     cpr::Payload payload{};
     std::string postData; 
-    const std::string tag("future");
-    const std::string querypath("fapi/v2/balance");
+    const std::string tag("spot");
+    const std::string querypath("v5/account/wallet-balance");
     
     auto response = HttpGet(connParams, tag, querypath, payload, postData);
     if(response.first != 200)
@@ -923,15 +857,16 @@ flat_set<BalanceData> Binance::GetPerpetualAccountBalances(
     try
     {
         const std::string& msg = response.second;
-        if(reader->parse(msg.c_str(), msg.c_str() + msg.size(),&data, &errs))
+        if(reader->parse(msg.c_str(), msg.c_str() + msg.size(),&records, &errs))
         {
-            for(Json::Value& item: data)
+            for(const Json::Value& item: records["result"]["list"]["coin"])
             {
-                balance.exchange = "binance";
-                balance.asset = item["asset"].asString();
-                balance.available = std::stod(item["availableBalance"].asString());
-                balance.locked = std::stod(item["balance"].asString()) - balance.available;
-                balance.unrealizedPNL = std::stod(item["crossUnPnl"].asString());
+                balance.exchange = "bybit";
+
+                balance.asset = item["coin"].asString();
+                balance.available = std::stod(item["availableToBorrow"].asString());
+                balance.locked = std::stod(item["walletBalance"].asString()) - balance.available;
+                balance.unrealizedPNL = std::stod(item["unrealisedPnl"].asString());
                 balances.insert(balance);
             }
         }
@@ -944,17 +879,17 @@ flat_set<BalanceData> Binance::GetPerpetualAccountBalances(
     return balances;
 }
 
-flat_set<BalanceData> Binance::GetOptionAccountBalances(
+flat_set<BalanceData> Bybit::GetPerpetualAccountBalances(
     const std::set<std::string>& currencies)
 {
     BalanceData balance;
     flat_set<BalanceData> balances;
-    
-    Json::Value data;
+
+    Json::Value records;
     cpr::Payload payload{};
     std::string postData; 
-    const std::string tag("option");
-    const std::string querypath("eapi/v1/account");
+    const std::string tag("future");
+    const std::string querypath("contract/v3/private/account/wallet/balance");
     
     auto response = HttpGet(connParams, tag, querypath, payload, postData);
     if(response.first != 200)
@@ -962,7 +897,7 @@ flat_set<BalanceData> Binance::GetOptionAccountBalances(
         LOG_IF(WARNING, verbose > 2) << response.second;
         return balances;
     }
-        
+
     // parse response
     std::string errs;
     std::unique_ptr<Json::CharReader> reader;
@@ -972,32 +907,39 @@ flat_set<BalanceData> Binance::GetOptionAccountBalances(
     try
     {
         const std::string& msg = response.second;
-        if(reader->parse(msg.c_str(), msg.c_str() + msg.size(),&data, &errs))
+        if(reader->parse(msg.c_str(), msg.c_str() + msg.size(),&records, &errs))
         {
-            if(data.isMember("asset"))
+            for(Json::Value& item: records["list"])
             {
-                for(const Json::Value& item: data["asset"])
-                {
-                    balance.exchange = "binance";
-                    balance.asset = item["asset"].asString();
-                    balance.available = std::stod(item["available"].asString());
-                    balance.locked = std::stod(item["locked"].asString());
-                    balance.marginBalance = std::stod(item["marginBalance"].asString());
-                    balance.unrealizedPNL = std::stod(item["unrealizedPNL"].asString());
-                    balances.insert(balance);
-                }
+                balance.exchange = "bybit";
+                balance.asset = item["asset"].asString();
+                balance.available = std::stod(item["availableBalance"].asString());
+                balance.locked = std::stod(item["walletBalance"].asString()) - balance.available;
+                balance.unrealizedPNL = std::stod(item["unrealisedPnl"].asString());
+                balances.insert(balance);
             }
         }
     }
     catch(std::exception& e)
     {
         LOG_IF(WARNING, verbose > 2) << e.what();
-    }
+    }      
 
     return balances;
 }
 
-bool Binance::BuildNewOrder(const Json::Value &params, cpr::Payload& payload)
+flat_set<BalanceData> Bybit::GetOptionAccountBalances(
+    const std::set<std::string>& currencies)
+{
+    BalanceData balance;
+    flat_set<BalanceData> balances;
+
+    LOG(WARNING) << "Not implemented!";
+
+    return balances;
+}
+
+bool Bybit::BuildNewOrder(const Json::Value &params, cpr::Payload& payload)
 {
     bool success = false;
     try
@@ -1043,20 +985,22 @@ bool Binance::BuildNewOrder(const Json::Value &params, cpr::Payload& payload)
 
             payload.AddPair({"symbol", params["instrum"].asString()});
             payload.AddPair({"side", params["side"].asString()});
-            payload.AddPair({"type", orderType});
-            payload.AddPair({"timeInForce", params.get("timeInForce","GTC").asString()});        
+            payload.AddPair({"orderType", orderType});     
                         
             if(orderType != "MARKET")
             {
                 payload.AddPair({"price", ssp.str()});
                 if(stopPrice > 0)
-                    payload.AddPair({"stopPrice", sspl.str()});
+                    payload.AddPair({"stopLoss", sspl.str()});
                 if(profitPrice > 0)
-                    payload.AddPair({"profitPrice", sstp.str()});
+                    payload.AddPair({"takeProfit", sstp.str()});
             }
 
+            if(params.isMember("posSide") && !params["posSide"].asString().empty())
+                payload.AddPair({"positionIdx", paramMapping.get(params["posSide"].asString(), 0).asInt()});
+
             if(params.isMember("clOrderId") && !params["clOrderId"].asString().empty())
-                payload.AddPair({"newClientOrderId", params["clOrderId"].asString()});
+                payload.AddPair({"orderLinkId", params["clOrderId"].asString()});
 
             if(params.isMember("marginMode") && !params["marginMode"].asString().empty())
                 payload.AddPair({"marginType", params["marginMode"].asString()});
@@ -1070,12 +1014,11 @@ bool Binance::BuildNewOrder(const Json::Value &params, cpr::Payload& payload)
                 if(params.get("reduceOnly", false).asBool())
                     payload.AddPair({"reduceOnly", "true"});
 
-                if(params.get("postOnly", false).asBool())
-                    payload.AddPair({"postOnly", "true"});
-
-                payload.AddPair({"quantity", ssq.str()});
+                payload.AddPair({"qty", ssq.str()});
             }
 
+            std::string timeInForce = params.get("timeInForce","GTC").asString(); 
+            payload.AddPair({"timeInForce", paramMapping.get(timeInForce, "GoodTillCancel").asString()});
 
             success = true;
         }
@@ -1093,7 +1036,7 @@ bool Binance::BuildNewOrder(const Json::Value &params, cpr::Payload& payload)
     return success;
 }
 
-bool Binance::BuildNewOrder(const Json::Value &params, Json::Value& payload)
+bool Bybit::BuildNewOrder(const Json::Value &params, Json::Value& payload)
 {
     bool success = false;
     try
@@ -1135,42 +1078,49 @@ bool Binance::BuildNewOrder(const Json::Value &params, Json::Value& payload)
             ssq << quantity;
 
             std::string orderType = params.get("orderType", "LIMIT").asString();
-            std::transform(orderType.begin(), orderType.end(), orderType.begin(), ::toupper);
+            std::transform(orderType.begin(), orderType.end(), orderType.begin(), ::tolower);
+            orderType.at(0) = ::toupper(orderType.at(0));
+
+            std::string orderSide = params.get("side", "Buy").asString();
+            std::transform(orderSide.begin(), orderSide.end(), orderSide.begin(), ::tolower);
+            orderSide.at(0) = ::toupper(orderSide.at(0));
 
             payload["symbol"] = params["instrum"].asString();
-            payload["side"] = params["side"].asString();
-            payload["type"] = orderType;
-            payload["timeInForce"] = params.get("timeInForce","GTC").asString();        
-                        
+            payload["side"] = orderSide;
+            payload["orderType"] = orderType;
+
             if(orderType != "MARKET")
             {
                 payload["price"] = ssp.str();
                 if(stopPrice > 0)
-                    payload["stopPrice"] = sspl.str();
+                    payload["stopLoss"] = sspl.str();
                 if(profitPrice > 0)
-                    payload["profitPrice"] = sstp.str();
+                    payload["takeProfit"] = sstp.str();
             }
 
+            if(params.isMember("posSide") && !params["posSide"].asString().empty())
+                payload["positionIdx"] = paramMapping.get(params["posSide"].asString(), 0).asInt();
+
             if(params.isMember("clOrderId") && !params["clOrderId"].asString().empty())
-                payload["newClientOrderId"] = params["clOrderId"].asString();
+                payload["orderLinkId"] = params["clOrderId"].asString();
 
             if(params.isMember("marginMode") && !params["marginMode"].asString().empty())
                 payload["marginType"] = params["marginMode"].asString();
 
             if(params.get("closePosition", false).asBool())
             {
-                payload["closePosition"] = "true";
+                payload["closePosition"] = true;
             }
             else
             {
                 if(params.get("reduceOnly", false).asBool())
-                    payload["reduceOnly"] = "true";
+                    payload["reduceOnly"] = true;
 
-                if(params.get("postOnly", false).asBool())
-                    payload["postOnly"] = "true";
-
-                payload["quantity"] = ssq.str();
+                payload["qty"] = ssq.str();
             }
+
+            std::string timeInForce = params.get("timeInForce","GTC").asString(); 
+            payload["timeInForce"] = paramMapping.get(timeInForce, "GoodTillCancel");
 
             success = true;
         }
@@ -1188,27 +1138,33 @@ bool Binance::BuildNewOrder(const Json::Value &params, Json::Value& payload)
     return success;
 }
 
-OrderData Binance::NewSpotOrder(const Json::Value& params, bool isdummy) 
+OrderData Bybit::NewSpotOrder(const Json::Value& params, bool isdummy) 
 {
     OrderData ordData;
-    ordData.exchange = "binance";
+    ordData.exchange = "bybit";
     ordData.assetClass = "spot";
     std::string privacy("private");
     try
     {
         // build spot order and send to exchange
-        std::string querypath("api/v3/order");
+        std::string querypath("v5/order/create");
         if(isdummy)
             querypath.append("/test");
         
         cpr::Header headers{};
         cpr::Payload payload{};
-        std::string postData; 
-        if(!BuildNewOrder(params, payload))
+        Json::Value order;
+
+        if(!BuildNewOrder(params, order))
         {
             LOG_IF(WARNING, verbose > 2) << "NewSpotOrder failed!";
             return ordData;
         }
+
+        Json::StreamWriterBuilder builder;
+        builder["indentation"] = "";
+        std::string postData(Json::writeString(builder, order));
+
         auto response = HttpPost(connParams, ordData.assetClass, querypath,
                                 payload, postData, headers, true, privacy);
         if(response.first != 200)
@@ -1228,25 +1184,31 @@ OrderData Binance::NewSpotOrder(const Json::Value& params, bool isdummy)
     return ordData;
 }
 
-OrderData Binance::NewPerpetualOrder(const Json::Value& params, bool isdummy) 
+OrderData Bybit::NewPerpetualOrder(const Json::Value& params, bool isdummy) 
 {
     OrderData ordData;
-    ordData.exchange = "binance";
+    ordData.exchange = "bybit";
     ordData.assetClass = "future";
     std::string privacy("private");
     try
     {        
         // build spot order and send to exchange
-        std::string querypath("fapi/v1/order");
+        std::string querypath("contract/v3/private/order/create");
         
         cpr::Header headers{};
         cpr::Payload payload{};
-        std::string postData; 
-        if(!BuildNewOrder(params, payload))
+        Json::Value order;
+        
+        if(!BuildNewOrder(params, order))
         {
             LOG_IF(WARNING, verbose > 2) << "NewPerpetualOrder failed!";
             return ordData;
         }
+
+        Json::StreamWriterBuilder builder;
+        builder["indentation"] = "";
+        std::string postData(Json::writeString(builder, order));
+
         auto response = HttpPost(connParams, ordData.assetClass, querypath, 
                                 payload, postData, headers, true, privacy);
         if(response.first != 200)
@@ -1266,198 +1228,52 @@ OrderData Binance::NewPerpetualOrder(const Json::Value& params, bool isdummy)
     return ordData;
 }
 
-OrderData Binance::NewOptionOrder(const Json::Value& params, bool isdummy) 
+OrderData Bybit::NewOptionOrder(const Json::Value& params, bool isdummy) 
 {
     OrderData ordData;
-    ordData.exchange = "binance";
+    ordData.exchange = "bybit";
     ordData.assetClass = "option";
     std::string privacy("private");
 
-    try
-    {
-        // build spot order and send to exchange
-        std::string tag("option");
-        std::string querypath("eapi/v1/order");
-        
-        cpr::Header headers{};
-        cpr::Payload payload{};
-        std::string postData; 
-        if(!BuildNewOrder(params, payload))
-        {
-            LOG_IF(WARNING, verbose > 2) << "NewOptionOrder failed!";
-            return ordData;
-        }
-        auto response = HttpPost(connParams, ordData.assetClass, querypath, 
-                                payload, postData, headers, true, privacy);
-        if(response.first != 200)
-        {
-            LOG_IF(WARNING, verbose > 2) << response.second;
-            return ordData;
-        }
-
-        // parse response 
-        ordData = OrdersParserGet(response.second, ordData.assetClass);
-    }
-    catch(std::exception& e)
-    {
-        LOG_IF(WARNING, verbose > 2) << e.what();
-    }
+    LOG(WARNING) << "NOT Implemented!";
     
     return ordData;
 }
 
-flat_set<OrderData> Binance::NewSpotBatchOrders(const Json::Value& params)
+flat_set<OrderData> Bybit::NewSpotBatchOrders(const Json::Value& params)
 {
     flat_set<OrderData> orders;
 
     std::string assetClass = "spot";
     std::string privacy("private");
-    try
-    {
-        // build spot order and send to exchange
-        std::string querypath("api/v3/batchOrders");
-        
-        cpr::Header headers{};
-        cpr::Payload payload{};
-        std::string postData;
-        Json::Value batchOrders;
-        batchOrders["orders"] = Json::Value(Json::arrayValue);
 
-        if(!params.isMember("orders"))
-        {
-            LOG_IF(WARNING, verbose > 1) << "Given json does not have member 'orders'";
-            return orders;
-        }
-
-        int64_t overCount = params["orders"].size() - MAX_BATCH_ORDERS;
-        if(overCount > 0)
-        {
-            LOG_IF(WARNING, verbose > 1) 
-                << overCount << " orders will not be submitted."
-                << "Max orders count is " << MAX_BATCH_ORDERS;
-        }
-
-        for(const auto& item: params["orders"])
-        {
-            Json::Value order;
-            if(!BuildNewOrder(item, order))
-            {
-                LOG_IF(WARNING, verbose > 2) << "NewSpotOrder failed!";
-                continue;
-            }
-
-            batchOrders["orders"].append(order);
-            if(batchOrders["orders"].size() >= MAX_BATCH_ORDERS) break;
-        }
-
-        if(batchOrders["orders"].size() > 0)
-        {
-            Json::StreamWriterBuilder builder;
-            builder["indentation"] = "";
-            postData.append(Json::writeString(builder, batchOrders["orders"]));
-            payload.AddPair({"batchOrders", Json::writeString(builder, batchOrders["orders"])});
-
-            auto response = HttpPost(connParams, assetClass, querypath, 
-                                payload, postData, headers, true, privacy);
-            if(response.first != 200)
-            {
-                LOG_IF(WARNING, verbose > 2) << response.second;
-                return orders;
-            }
-
-            // parse response 
-            orders = BatchOrdersParserGet(response.second, assetClass);
-        }
-    }
-    catch(std::exception& e)
-    {
-        LOG_IF(WARNING, verbose > 2) << e.what();
-    }
+    LOG(WARNING) << "NOT Implemented!";
 
     return orders;
 }
 
-flat_set<OrderData> Binance::NewPerpetualBatchOrders(const Json::Value& params)
+flat_set<OrderData> Bybit::NewPerpetualBatchOrders(const Json::Value& params)
 {
     flat_set<OrderData> orders;
 
     std::string assetClass = "future";
     std::string privacy("private");
-    try
-    {
-        // build spot order and send to exchange
-        std::string querypath("fapi/v1/batchOrders");
-        
-        cpr::Header headers{};
-        cpr::Payload payload{};
-        std::string postData;
-        Json::Value batchOrders;
-        batchOrders["orders"] = Json::Value(Json::arrayValue);
-
-        if(!params.isMember("orders"))
-        {
-            LOG_IF(WARNING, verbose > 1) << "Given json does not have member 'orders'";
-            return orders;
-        }
-
-        int64_t overCount = params["orders"].size() - MAX_BATCH_ORDERS;
-        if(overCount > 0)
-        {
-            LOG_IF(WARNING, verbose > 1) 
-                << overCount << " orders will not be submitted."
-                << "Max orders count is " << MAX_BATCH_ORDERS;
-        }
-
-        for(const auto& item: params["orders"])
-        {
-            Json::Value order;
-            if(!BuildNewOrder(item, order))
-            {
-                LOG_IF(WARNING, verbose > 2) << "NewSpotOrder failed!";
-                continue;
-            }
-
-            batchOrders["orders"].append(order);
-            if(batchOrders["orders"].size() >= MAX_BATCH_ORDERS) break;
-        }
-
-        if(batchOrders["orders"].size() > 0)
-        {
-            Json::StreamWriterBuilder builder;
-            builder["indentation"] = "";
-            postData.append(Json::writeString(builder, batchOrders["orders"]));
-            payload.AddPair({"batchOrders", Json::writeString(builder, batchOrders["orders"])});
-
-            auto response = HttpPost(connParams, assetClass, querypath, 
-                                payload, postData, headers, true, privacy);
-            if(response.first != 200)
-            {
-                LOG_IF(WARNING, verbose > 2) << response.second;
-                return orders;
-            }
-
-            // parse response 
-            orders = BatchOrdersParserGet(response.second, assetClass);
-        }
-    }
-    catch(std::exception& e)
-    {
-        LOG_IF(WARNING, verbose > 2) << e.what();
-    }
+    
+    LOG(WARNING) << "NOT Implemented!";
 
     return orders;
 }
 
-OrderData Binance::GetSpotOrder(const std::string& instrum, std::string id, std::string lid) 
+OrderData Bybit::GetSpotOrder(const std::string& instrum, std::string id, std::string lid) 
 {
     OrderData ordData;
-    ordData.exchange = "binance";
+    ordData.exchange = "bybit";
     ordData.assetClass = "spot";
     std::string privacy("private");
 
     try
     {
-        std::string querypath("api/v3/order");
+        std::string querypath("v5/order/realtime");
 
         cpr::Header headers{};
         cpr::Payload payload{};
@@ -1466,8 +1282,7 @@ OrderData Binance::GetSpotOrder(const std::string& instrum, std::string id, std:
         if(!id.empty())
             payload.AddPair({"orderId", id});
         if(!lid.empty())
-            payload.AddPair({"origClientOrderId", lid});
-
+            payload.AddPair({"orderLinkId", lid});
 
         auto response = HttpGet(connParams, ordData.assetClass, querypath, 
                             payload, postData, headers, true, privacy);
@@ -1488,16 +1303,16 @@ OrderData Binance::GetSpotOrder(const std::string& instrum, std::string id, std:
     return ordData;
 }
 
-OrderData Binance::GetPerpetualOrder(const std::string& instrum, std::string id, std::string lid)
+OrderData Bybit::GetPerpetualOrder(const std::string& instrum, std::string id, std::string lid)
 {
     OrderData ordData;
-    ordData.exchange = "binance";
+    ordData.exchange = "bybit";
     ordData.assetClass = "future";
     std::string privacy("private");
 
     try
     { 
-        std::string querypath("fapi/v1/order");
+        std::string querypath("contract/v3/private/order/unfilled-orders");
 
         cpr::Header headers{};
         cpr::Payload payload{};
@@ -1506,7 +1321,7 @@ OrderData Binance::GetPerpetualOrder(const std::string& instrum, std::string id,
         if(!id.empty())
             payload.AddPair({"orderId", id});
         if(!lid.empty())
-            payload.AddPair({"origClientOrderId", lid});
+            payload.AddPair({"orderLinkId", lid});
 
 
         auto response = HttpGet(connParams, ordData.assetClass, querypath, 
@@ -1528,47 +1343,19 @@ OrderData Binance::GetPerpetualOrder(const std::string& instrum, std::string id,
     return ordData;
 }
 
-OrderData Binance::GetOptionOrder(const std::string& instrum, std::string id, std::string lid)
+OrderData Bybit::GetOptionOrder(const std::string& instrum, std::string id, std::string lid)
 {
     OrderData ordData;
-    ordData.exchange = "binance";
+    ordData.exchange = "bybit";
     ordData.assetClass = "option";
     std::string privacy("private");
     
-    try
-    {
-        std::string tag("option"); 
-        std::string querypath("eapi/v1/order");
-
-        cpr::Header headers{};
-        cpr::Payload payload{};
-        std::string postData;
-        payload.AddPair({"symbol", instrum});
-        if(!id.empty())
-            payload.AddPair({"orderId", id});
-        if(!lid.empty())
-            payload.AddPair({"origClientOrderId", lid});
-
-        auto response = HttpGet(connParams, ordData.assetClass, querypath, 
-                                payload, postData, headers, true, privacy);
-        if(response.first != 200)
-        {
-            LOG_IF(WARNING, verbose > 2) << response.second;
-            return ordData;
-        }
-
-        // parse response 
-        ordData = OrdersParserGet(response.second, ordData.assetClass);
-    }
-    catch(std::exception& e)
-    {
-        LOG_IF(WARNING, verbose > 2) << e.what();
-    }
+    LOG(WARNING) << "NOT Implemented!";
 
     return ordData;
 }
 
-flat_set<OrderData> Binance::GetPerpetualOpenOrders()
+flat_set<OrderData> Bybit::GetPerpetualOpenOrders()
 {
     flat_set<OrderData> orders;
 
@@ -1577,12 +1364,14 @@ flat_set<OrderData> Binance::GetPerpetualOpenOrders()
 
     try
     {
-        std::string querypath("fapi/v1/openOrders");
+        std::string querypath("contract/v3/private/order/list");
 
         cpr::Header headers{};
         cpr::Payload payload{};
         std::string postData;
-        
+
+        payload.AddPair({"orderStatus","Active"});
+
         auto response = HttpGet(connParams, assetClass, querypath, 
                                 payload, postData, headers, true, privacy);
 
@@ -1602,7 +1391,7 @@ flat_set<OrderData> Binance::GetPerpetualOpenOrders()
     return orders;
 }
 
-bool Binance::CancelSpotOrder(const std::string& instrum, std::string id, std::string lid) 
+bool Bybit::CancelSpotOrder(const std::string& instrum, std::string id, std::string lid) 
 {
     bool sucess = false;
     std::string assetClass("spot");
@@ -1611,7 +1400,7 @@ bool Binance::CancelSpotOrder(const std::string& instrum, std::string id, std::s
     try
     {
         std::string tag("spot"); 
-        std::string querypath("api/v3/order");
+        std::string querypath("v5/order/cancel");
 
         cpr::Header headers{};
         cpr::Payload payload{};
@@ -1620,7 +1409,7 @@ bool Binance::CancelSpotOrder(const std::string& instrum, std::string id, std::s
         if(!id.empty())
             payload.AddPair({"orderId", id});
         if(!lid.empty())
-            payload.AddPair({"origClientOrderId", lid});
+            payload.AddPair({"orderLinkId", lid});
 
         auto response = HttpDelete(connParams, assetClass, querypath, 
                                 payload, postData, headers, true, privacy);
@@ -1639,7 +1428,7 @@ bool Binance::CancelSpotOrder(const std::string& instrum, std::string id, std::s
     return sucess;
 }
 
-bool Binance::CancelPerpetualOrder(const std::string& instrum, std::string id, std::string lid) 
+bool Bybit::CancelPerpetualOrder(const std::string& instrum, std::string id, std::string lid) 
 {
     bool sucess = false;
     std::string assetClass("future");
@@ -1647,7 +1436,7 @@ bool Binance::CancelPerpetualOrder(const std::string& instrum, std::string id, s
 
     try
     {
-        std::string querypath("fapi/v1/order");
+        std::string querypath("contract/v3/private/order/cancel");
 
         cpr::Header headers{};
         cpr::Payload payload{};
@@ -1656,7 +1445,7 @@ bool Binance::CancelPerpetualOrder(const std::string& instrum, std::string id, s
         if(!id.empty())
             payload.AddPair({"orderId", id});
         if(!lid.empty())
-            payload.AddPair({"origClientOrderId", lid});
+            payload.AddPair({"orderLinkId", lid});
 
         auto response = HttpDelete(connParams, assetClass, querypath, 
                             payload, postData, headers, true, privacy);
@@ -1674,43 +1463,18 @@ bool Binance::CancelPerpetualOrder(const std::string& instrum, std::string id, s
     return sucess;
 }
 
-bool Binance::CancelOptionOrder(const std::string& instrum, std::string id, std::string lid) 
+bool Bybit::CancelOptionOrder(const std::string& instrum, std::string id, std::string lid) 
 {
     bool sucess = false;
     std::string assetClass("option");
     std::string privacy("private");
 
-    try
-    {
-        std::string querypath("eapi/v1/order");
-
-        cpr::Header headers{};
-        cpr::Payload payload{};
-        std::string postData;
-        payload.AddPair({"symbol", instrum});
-        if(!id.empty())
-            payload.AddPair({"orderId", id});
-        if(!lid.empty())
-            payload.AddPair({"origClientOrderId", lid});
-
-        auto response = HttpDelete(connParams, assetClass, querypath, 
-                                payload, postData, headers, true, privacy);
-        sucess = response.first == 200;
-        if(response.first != 200)
-        {
-            sucess = false;
-            LOG_IF(WARNING, verbose > 0) << response.second;
-        }
-    }
-    catch(std::exception& e)
-    {
-        LOG_IF(WARNING, verbose > 2) << e.what();
-    }
+    LOG(WARNING) << "NOT Implemented!";
 
     return sucess;
 }
 
-bool Binance::CancelBatchOrders(
+bool Bybit::CancelBatchOrders(
     const std::string& assetClass, const std::string& privacy, 
     const std::string& querypath, cpr::Payload& payload)
 {
@@ -1736,7 +1500,7 @@ bool Binance::CancelBatchOrders(
     return success;
 }
 
-std::vector<StrPair> Binance::CancelSpotOrders(const std::vector<StrPair>& params) 
+std::vector<StrPair> Bybit::CancelSpotOrders(const std::vector<StrPair>& params) 
 {
     std::string assetClass("spot");
     std::string privacy("private");
@@ -1744,69 +1508,25 @@ std::vector<StrPair> Binance::CancelSpotOrders(const std::vector<StrPair>& param
     
     std::vector<StrPair> submmiteds;
     
-    cpr::Payload payload{};
-    Json::Value batchOrderIds;
-    Json::StreamWriterBuilder builder;
-    builder["indentation"] = "";
-
-    for(const StrPair& item: params)
-    {
-        submmiteds.emplace_back(item.first, item.second);
-        if(!batchOrderIds.isMember(item.first))
-            batchOrderIds[item.first] = Json::Value(Json::arrayValue);
-
-        batchOrderIds[item.first].append(item.second);
-    }
-
-    for(const StrPair& item: params)
-    {
-        payload.AddPair({"symbol",item.first});
-        payload.AddPair({"orderIdList", Json::writeString(builder, batchOrderIds[item.first])});
-        if(!CancelBatchOrders(assetClass, privacy, querypath, payload))
-        {
-            submmiteds = std::vector<StrPair>{};
-        }
-    }
+    LOG(WARNING) << "NOT Implemented!";
 
     return submmiteds;
 }
 
-std::vector<StrPair> Binance::CancelPerpetualOrders(const std::vector<StrPair>& params) 
+std::vector<StrPair> Bybit::CancelPerpetualOrders(const std::vector<StrPair>& params) 
 {
     std::string assetClass("future");
     std::string privacy("private");
-    std::string querypath("fapi/v1/batchOrders");
+    std::string querypath("contract/v3/private/order/cancel");
     
     std::vector<StrPair> submmiteds;
     
-    cpr::Payload payload{};
-    Json::Value batchOrderIds;
-    Json::StreamWriterBuilder builder;
-    builder["indentation"] = "";
-
-    for(const StrPair& item: params)
-    {
-        submmiteds.emplace_back(item.first, item.second);
-        if(!batchOrderIds.isMember(item.first))
-            batchOrderIds[item.first] = Json::Value(Json::arrayValue);
-
-        batchOrderIds[item.first].append(item.second);
-    }
-
-    for(const StrPair& item: params)
-    {
-        payload.AddPair({"symbol",item.first});
-        payload.AddPair({"orderIdList", Json::writeString(builder, batchOrderIds[item.first])});
-        if(!CancelBatchOrders(assetClass, privacy, querypath, payload))
-        {
-            submmiteds = std::vector<StrPair>{};
-        }
-    }
+    LOG(WARNING) << "NOT Implemented!";
 
     return submmiteds;
 }
 
-std::vector<StrPair> Binance::CancelOptionOrders(const std::vector<StrPair>& params) 
+std::vector<StrPair> Bybit::CancelOptionOrders(const std::vector<StrPair>& params) 
 {
     std::string assetClass("option");
     std::string privacy("private");
@@ -1814,36 +1534,14 @@ std::vector<StrPair> Binance::CancelOptionOrders(const std::vector<StrPair>& par
     
     std::vector<StrPair> submmiteds;
     
-    cpr::Payload payload{};
-    Json::Value batchOrderIds;
-    Json::StreamWriterBuilder builder;
-    builder["indentation"] = "";
-
-    for(const StrPair& item: params)
-    {
-        submmiteds.emplace_back(item.first, item.second);
-        if(!batchOrderIds.isMember(item.first))
-            batchOrderIds[item.first] = Json::Value(Json::arrayValue);
-
-        batchOrderIds[item.first].append(item.second);
-    }
-
-    for(const StrPair& item: params)
-    {
-        payload.AddPair({"symbol",item.first});
-        payload.AddPair({"orderIdList", Json::writeString(builder, batchOrderIds[item.first])});
-        if(!CancelBatchOrders(assetClass, privacy, querypath, payload))
-        {
-            submmiteds = std::vector<StrPair>{};
-        }
-    }
+    LOG(WARNING) << "NOT Implemented!";
 
     return submmiteds;
 }
 
-Json::Value Binance::GetLastPerpetualTrade(const std::string& instrum, int limit)
+Json::Value Bybit::GetLastPerpetualTrade(const std::string& instrum, int limit)
 {
-    std::string exchange("binance");
+    std::string exchange("Bybit");
     std::string assetClass("future");
     std::string privacy("private");
 
@@ -1855,7 +1553,7 @@ Json::Value Binance::GetLastPerpetualTrade(const std::string& instrum, int limit
 
     try
     { 
-        std::string querypath("fapi/v1/userTrades");
+        std::string querypath("contract/v3/private/execution/list");
 
         cpr::Header headers{};
         cpr::Payload payload{};
@@ -1882,17 +1580,17 @@ Json::Value Binance::GetLastPerpetualTrade(const std::string& instrum, int limit
     return trades;
 }
 
-flat_set<PositionData> Binance::GetPerpetualPositions(const std::string& instrum, std::string lid) 
+flat_set<PositionData> Bybit::GetPerpetualPositions(const std::string& instrum, std::string lid) 
 {
     flat_set<PositionData> positions;
 
     PositionData posData;
-    posData.exchange = "binance";
+    posData.exchange = "bybit";
     posData.assetClass = "future";
     std::string privacy("private");
     try
     { 
-        std::string querypath("fapi/v2/positionRisk");
+        std::string querypath("contract/v3/private/position/list");
 
         cpr::Header headers{};
         cpr::Payload payload{};
@@ -1926,174 +1624,88 @@ flat_set<PositionData> Binance::GetPerpetualPositions(const std::string& instrum
     return positions;
 }
 
-flat_set<PositionData> Binance::GetOptionPositions(const std::string& instrum, std::string lid) 
+flat_set<PositionData> Bybit::GetOptionPositions(const std::string& instrum, std::string lid) 
 {
     flat_set<PositionData> positions;
 
-    PositionData posData;
-    posData.exchange = "binance";
-    posData.assetClass = "option";
-    std::string privacy("private");
-    try
-    {
-        std::string tag("option"); 
-        std::string querypath("eapi/v1/position");
-
-        cpr::Header headers{};
-        cpr::Payload payload{};
-        std::string postData;
-        payload.AddPair({"symbol", instrum});
-
-        auto response = HttpGet(connParams, posData.assetClass, querypath, 
-                                payload, postData, headers, true, privacy);
-        if(response.first != 200)
-        {
-            LOG_IF(WARNING, verbose > 0) << response.second;
-            return positions;
-        }
-
-        positions = PerpetualPositionParserGet(response.second, posData.assetClass); 
-        if(!lid.empty())
-        {
-            posData.lid = lid;
-            flat_set<PositionData> items;
-            auto piter = positions.find(posData);
-            if(piter != positions.end())
-                items.insert(*piter);
-            positions = items;
-        }
-    }
-    catch(std::exception& e)
-    {
-        LOG_IF(WARNING, verbose > 1) << e.what();
-    }
+    LOG(WARNING) << "NOT Implemented!";
 
     return positions;
 }
 
-void Binance::InfoParser(const Json::Value& info)
+void Bybit::InfoParser(const Json::Value& info)
 {
-    if(info.isMember("symbols"))
+    if(info.get("retCode", "-1").asInt() == 0)
     {
-        for(const Json::Value& item: info["symbols"])
+        try
         {
-            Filter filter;
-            filter.instrum = item["symbol"].asString();
-            filter.status = item["status"].asString();
-            filter.pxPrecision = item["pricePrecision"].asDouble();
-            filter.qtyPrecision = item["quantityPrecision"].asDouble();
-            filter.basePrecision = item["baseAssetPrecision"].asInt();
-            filter.quotePrecision = item["quotePrecision"].asInt();
-            if(item.isMember("filters"))
+            for(const Json::Value& item: info["result"]["list"])
             {
-                for(const Json::Value& instFilter: item["filters"])
-                {
-                    if(instFilter["filterType"].asString() == "PRICE_FILTER")
-                    {
-                        filter.tickSize = std::stod(instFilter["tickSize"].asString());
-                        filter.maxPrice = std::stod(instFilter["maxPrice"].asString());
-                    }
-                    else if(instFilter["filterType"].asString() == "LOT_SIZE")
-                    {
-                        filter.stepSize = std::stod(instFilter["stepSize"].asString());
-                        filter.maxQty = std::stod(instFilter["maxQty"].asString());
-                    }
-                }
+                Filter filter;
+                filter.instrum = item["symbol"].asString();
+                filter.status = item["status"].asString();
+                filter.pxPrecision = 8; //item["pricePrecision"].asDouble();
+                filter.qtyPrecision = 8; //item["basePrecision"].asDouble();
+                filter.basePrecision = 8; //item["basePrecision"].asInt();
+                filter.quotePrecision = 8; //item["quotePrecision"].asInt();
+                filter.tickSize = std::stod(item["priceFilter"]["tickSize"].asString());
+                filter.maxPrice = std::stod(item["priceFilter"]["maxPrice"].asString());
+                filter.stepSize = std::stod(item["lotSizeFilter"]["qtyStep"].asString());
+                filter.maxQty = std::stod(item["lotSizeFilter"]["maxOrderQty"].asString());
+
+                filters.insert(filter);
+
+                LOG_IF(INFO, verbose > 1) << "Filter: " << filter;
             }
-            filters.insert(filter);
-
-            LOG_IF(INFO, verbose > 2) << "Filter: " << filter;
         }
-    }
-
-    if(info.isMember("rateLimits"))
-    {
-        for(const Json::Value& item: info["rateLimits"])
+        catch(std::exception& e)
         {
-            if(item["rateLimitType"].asString() == "REQUEST_WEIGHT")
-                REQUEST_LIMIT = item["limit"].asInt64();
-            else if(item["rateLimitType"].asString() == "ORDERS")
-                ORDERS_LIMIT = item["limit"].asInt64();
+            Json::StreamWriterBuilder builder;
+            builder["indentation"] = "\t";
+            LOG_IF(INFO, verbose > 0) 
+                << e.what() << "\n" << Json::writeString(builder, info);
         }
-
-        Json::StreamWriterBuilder builder;
-        builder["indentation"] = "";
-        LOG_IF(INFO, verbose > 0) 
-            << "rateLimits: " << Json::writeString(builder, info["rateLimits"]);
     }
 }
 
-void Binance::ListenKeyParser(const Json::Value& data, const std::string& tag, const std::time_t& ts)
+void Bybit::AuthenticationParser(const Json::Value& data, const std::string& tag, const std::time_t& ts)
 {
     std::string privacy("private");
     std::string connKey(privacy);
     connKey.append("_").append(tag);
-    std::string assetClass = tag;
-
+    
     if(connHdlPtrsMap.count(connKey))
     {
-        // reconnecto to private stream if keep alive failed
-        WebClient::connection_ptr closedCon;
-        ConnHandler::ptr connHdl = connHdlPtrsMap.at(connKey);
-        if(connHdl)
-        {
-            WebClient::connection_ptr con = connHdl->GetConnection();
-            if(con == nullptr) return;
-
-            connFlag.test_and_set(std::memory_order_release);
-
-            std::string oldListenKey = connHdl->GetUrl();
-            if(!GetListenKey(assetClass, privacy))
-            {
-                LOG_IF(WARNING, verbose > 0) << "Request new listenKey failed!";
-                return;
-            }
-
-            std::string url = connHdl->GetUrl();
-            std::string listenKey = listenKeys.at(connKey);
-            size_t pos = url.find(oldListenKey); 
-            if(pos == url.npos)
-            {
-                LOG_IF(WARNING, verbose > 0) << "ListenKey not found in connection uri!";
-                return;
-            }
-            url = url.replace(pos, oldListenKey.length(), listenKey);         
-
-            ConnState state;
-            con->close(websocketpp::close::status::extension_required, "ListenKey Expired");
-            websocketpp::uri_ptr newUri = websocketpp::lib::make_shared<websocketpp::uri>(url);
-            con->set_uri(newUri);
-
-            connHdl->SetUrl(url);
-            endpoint.connect(con);
-
-            connFlag.clear(std::memory_order_acquire); // release
-        }
+        bool success = data.get("success", 0).asBool();
+        authenticationMap[connKey] = success;
     }
 }
 
-void Binance::TradesParser(const Json::Value& data, const std::string& tag, const std::time_t& ts)
+void Bybit::TradesParser(const Json::Value& data, const std::string& tag, const std::time_t& ts)
 {
     try
     {
         if(priceQueue)
         {
             PriceData pxData;
-            pxData.exchange = "binance";
+            pxData.exchange = "bybit";
             pxData.assetClass = tag;
 
             const Json::Value& trade = data["data"];
 
             // convert timestamp into date, time and sec
-            pxData.timestamp = trade["T"].asInt64();
+            pxData.timestamp = data["T"].asInt64();
 
             // format date eg: 20190628 12:23:00
             pxData.date = Utils::FormatDate(pxData.timestamp);
             pxData.time = Utils::FormatTime(pxData.timestamp);
+
+            // get instrument from topic
+            pxData.instrum = trade["s"].asString();
+            pxData.instrum.erase(pxData.instrum.find_last_of('.')+1);
             
             // get tick data transaction info
-            pxData.instrum = trade["s"].asString();
-            pxData.quantity = std::stod(trade["q"].asString());
+            pxData.quantity = std::stod(trade["v"].asString());
 
             std::stringstream ssprice;
             double price = std::stod(trade["p"].asString());
@@ -2112,35 +1724,36 @@ void Binance::TradesParser(const Json::Value& data, const std::string& tag, cons
     }    
 }
 
-void Binance::CandlesParser(const Json::Value& data, const std::string& tag, const std::time_t& ts) 
+void Bybit::CandlesParser(const Json::Value& data, const std::string& tag, const std::time_t& ts) 
 {
     try
     {
         if(candleQueue)
         {
             CandleData candle;
-            candle.exchange = "binance";
+            candle.exchange = "bybit";
             candle.assetClass = tag;
 
-            const Json::Value& d = data["data"];
-            if(d.isMember("k"))
-            {
-                const Json::Value& kline = d["k"];
+            const Json::Value& kline = data["data"];
 
-                // convert timestamp into date, time and sec
-                candle.timestamp = kline["t"].asInt64();
-                candle.date = Utils::FormatDate(candle.timestamp);
-                candle.time = Utils::FormatTime(candle.timestamp);
+            std::string instrum = data.get("topic", "").asString();
+            size_t pos = instrum.find_last_of('.');
+            if(pos != instrum.npos)
+                instrum = instrum.substr(pos+1);
 
-                candle.instrum = kline["s"].asString();
-                candle.open = std::stod(kline["o"].asString());
-                candle.high = std::stod(kline["h"].asString());
-                candle.low = std::stod(kline["l"].asString());
-                candle.close = std::stod(kline["c"].asString());
-                candle.volume = std::stod(kline["q"].asString());
+            // convert timestamp into date, time and sec
+            candle.timestamp = kline["start"].asInt64();
+            candle.date = Utils::FormatDate(candle.timestamp);
+            candle.time = Utils::FormatTime(candle.timestamp);
 
-                candleQueue->enqueue(candle);
-            }
+            candle.instrum = instrum;
+            candle.open = std::stod(kline["open"].asString());
+            candle.high = std::stod(kline["high"].asString());
+            candle.low = std::stod(kline["low"].asString());
+            candle.close = std::stod(kline["close"].asString());
+            candle.volume = std::stod(kline["volume"].asString());
+
+            candleQueue->enqueue(candle);
         }
     }
     catch(std::exception& e)
@@ -2152,7 +1765,7 @@ void Binance::CandlesParser(const Json::Value& data, const std::string& tag, con
     }
 }
 
-void Binance::DepthParser(const Json::Value& data, const std::string& tag, const std::time_t& ts)
+void Bybit::DepthParser(const Json::Value& data, const std::string& tag, const std::time_t& ts)
 {
     try
     {
@@ -2203,7 +1816,7 @@ void Binance::DepthParser(const Json::Value& data, const std::string& tag, const
     }
 }
 
-void Binance::TickersParser(const Json::Value& data, const std::string& tag, const std::time_t& ts)
+void Bybit::TickersParser(const Json::Value& data, const std::string& tag, const std::time_t& ts)
 {
     try
     {
@@ -2212,18 +1825,18 @@ void Binance::TickersParser(const Json::Value& data, const std::string& tag, con
             const Json::Value& ticker = data["data"];
 
             TickerData tickData;
-            tickData.exchange = "binance";
+            tickData.exchange = "bybit";
             tickData.assetClass = tag;
 
             // convert timestamp into date, time and sec
-            tickData.timestamp = ticker.get("T", Utils::GetMilliseconds()).asInt64();
+            tickData.timestamp = data["ts"].asInt64();
             
             // get tick data transaction info
-            tickData.instrum = ticker["s"].asString();
-            tickData.bidQty = std::stod(ticker["B"].asString());
-            tickData.askQty = std::stod(ticker["A"].asString());
-            tickData.bid = std::stod(ticker["b"].asString());
-            tickData.ask = std::stod(ticker["a"].asString());
+            tickData.instrum = ticker["symbol"].asString();
+            tickData.bidQty = std::stod(ticker["bid1Size"].asString());
+            tickData.askQty = std::stod(ticker["ask1Size"].asString());
+            tickData.bid = std::stod(ticker["bid1Price"].asString());
+            tickData.ask = std::stod(ticker["ask1Price"].asString());
             
             if(tickerQueue)
                 tickerQueue->enqueue(tickData);
@@ -2238,38 +1851,40 @@ void Binance::TickersParser(const Json::Value& data, const std::string& tag, con
     }
 }
 
-void Binance::OrdersParser(const Json::Value& data, const std::string& tag, const std::time_t& ts)
+void Bybit::OrdersParser(const Json::Value& data, const std::string& tag, const std::time_t& ts)
 {
     try
     {
         if(orderQueue)
         {
-            OrderData ordData;
-            ordData.exchange = "binance";
-            ordData.assetClass = tag;
+            for(const Json::Value& order: data["data"])
+            {
+                OrderData ordData;
+                ordData.exchange = "bybit";
+                ordData.assetClass = tag;
 
-            const Json::Value& order = data["o"];
-            ordData.instrum = order.get("s", "").asString();
-            ordData.state = order.get("X","").asString();
-            ordData.id = std::to_string(order.get("i",0).asInt64());
-            ordData.lid = order.get("c","").asString();
-            ordData.local = false;
-            
-            ordData.timestamp = order.get("T",0).asInt64();
-            ordData.side = order.get("S","").asString();
-            ordData.orderType = order.get("o","LIMIT").asString();
-            ordData.price = std::stod(order.get("p", "0.0").asString());
-            ordData.stopPrice = std::stod(order.get("P", "0.0").asString());
-            ordData.quantity = std::stod(order.get("q", "0.0").asString());
-            ordData.execQuantity = std::stod(order.get("z", "0.0").asString());
-            ordData.timeInForce = order.get("f", "GTC").asString();
-            ordData.closePosition = order.get("R", 0).asBool();
-            ordData.posSide = order.get("ps", "").asString();
+                ordData.instrum = order.get("symbol", "").asString();
+                ordData.state = order.get("orderStatus","").asString();
+                ordData.id = order.get("orderId","").asString();
+                ordData.lid = order.get("orderLinkId","").asString();
+                ordData.local = false;
+                
+                ordData.timestamp = std::stoll(order.get("createdTime","0").asString());
+                ordData.side = order.get("side","").asString();
+                ordData.orderType = order.get("orderType","LIMIT").asString();
+                ordData.price = std::stod(order.get("price", "0.0").asString());
+                ordData.stopPrice = std::stod(order.get("stopLoss", "0.0").asString());
+                ordData.quantity = std::stod(order.get("qty", "0.0").asString());
+                ordData.execQuantity = std::stod(order.get("cumExecQty", "0.0").asString());
+                ordData.timeInForce = order.get("timeInForce", "GTC").asString();
+                ordData.closePosition = order.get("reduceOnly", 0).asBool();
+                ordData.posSide = order.get("posSide", "BOTH").asString();
 
-            ordData.date = Utils::FormatDatetime(ordData.timestamp);
+                ordData.date = Utils::FormatDatetime(ordData.timestamp);
 
-            if(orderQueue)
-                orderQueue->enqueue(ordData);
+                if(orderQueue)
+                    orderQueue->enqueue(ordData);
+            }
         }
     }
     catch(std::exception& e)
@@ -2281,155 +1896,153 @@ void Binance::OrdersParser(const Json::Value& data, const std::string& tag, cons
     }        
 }
 
-OrderData Binance::OrdersParserGet(const std::string& msg, const std::string& tag)
+OrderData Bybit::OrdersParserGet(const std::string& msg, const std::string& tag)
 {
     OrderData ordData;
-    ordData.exchange = "binance";
+    ordData.exchange = "bybit";
     ordData.assetClass = tag;
     ordData.local = false;
 
-    Json::Value order;
-    std::string errs;
-    std::unique_ptr<Json::CharReader> reader;
-    Json::CharReaderBuilder rbuilder;
-    reader.reset(rbuilder.newCharReader());
-
-    if(reader->parse(msg.c_str(), msg.c_str() + msg.size(),&order, &errs))
-    {
-        ordData.state = order.get("state", "").asString();
-        if(ordData.state.length() == 0)
-            ordData.state = order.get("status", "").asString();
-
-        ordData.instrum = order["symbol"].asString();
-        ordData.id = std::to_string(order.get("orderId",0).asInt64());
-        ordData.lid = order.get("clientOrderId","").asString();
-
-        ordData.side = order.get("side", "NONE").asString();
-        ordData.orderType = order.get("type","LIMIT").asString();
-        ordData.price = std::stod(order.get("price", "0.0").asString());
-        ordData.stopPrice = std::stod(order.get("stopPrice", "0.0").asString());
-        ordData.quantity = std::stod(order.get("origQty", "0.0").asString());
-        ordData.execQuantity = std::stod(order.get("executedQty", "0.0").asString());
-        ordData.timeInForce = order.get("timeInForce", "GTC").asString();
-        ordData.closePosition = order.get("closePosition", 0).asBool();
-        ordData.posSide = order.get("positionSide", "").asString();
-        ordData.closePosition = order.get("reduceOnly", 0).asBool();
-        ordData.attrs["postOnly"] = order.get("postOnly", 0).asBool();
-        ordData.attrs["quantityScale"] = order.get("quantityScale", 0).asInt();
-
-        if(order.isMember("optionSide"))
-            ordData.posSide = order["optionSide"].asString();
-
-        if(order.isMember("updateTime"))
-            ordData.timestamp = order.get("updateTime",0).asInt64();
-
-        if(order.isMember("time"))
-            ordData.timestamp = order["time"].asInt64();
-        else if(order.isMember("transactTime"))
-            ordData.timestamp = order["transactTime"].asInt64();
-        else if(order.isMember("createTime"))
-            ordData.timestamp = order["createTime"].asInt64();
-
-        ordData.date = Utils::FormatDatetime(ordData.timestamp);
-        //ordData.UpdateLocalId();
-    }
-
-    return ordData;
-}
-
-flat_set<OrderData> Binance::BatchOrdersParserGet(const std::string& msg, const std::string& tag)
-{
-    flat_set<OrderData> orders;
-    
     Json::Value records;
     std::string errs;
     std::unique_ptr<Json::CharReader> reader;
     Json::CharReaderBuilder rbuilder;
     reader.reset(rbuilder.newCharReader());
 
-    if(reader->parse(msg.c_str(), msg.c_str() + msg.size(),&records, &errs))
+    if(reader->parse(msg.c_str(), msg.c_str() + msg.size(),&records, &errs) && records["retCode"].asInt() == 0)
     {
-        for(const auto& order: records)
+        if(records.isMember("result") && records["result"].isMember("orderId"))
+        {
+            ordData.id = records["result"].get("orderId","").asString();
+            ordData.lid = records["result"].get("orderLinkId","").asString();
+            ordData.timestamp = std::stoll(records.get("time","0").asString());
+
+            return ordData;
+        }
+
+        for(const Json::Value& order: records["list"])
+        {
+            ordData.instrum = order.get("symbol", "").asString();
+            ordData.state = order.get("orderStatus","").asString();
+            ordData.id = order.get("orderId","").asString();
+            ordData.lid = order.get("orderLinkId","").asString();
+            ordData.local = false;
+            
+            ordData.timestamp = std::stoll(order.get("createdTime","0").asString());
+            ordData.side = order.get("side","").asString();
+            ordData.orderType = order.get("orderType","LIMIT").asString();
+            ordData.price = std::stod(order.get("price", "0.0").asString());
+            ordData.stopPrice = std::stod(order.get("stopLoss", "0.0").asString());
+            ordData.quantity = std::stod(order.get("qty", "0.0").asString());
+            ordData.execQuantity = std::stod(order.get("cumExecQty", "0.0").asString());
+            ordData.timeInForce = order.get("timeInForce", "GTC").asString();
+            ordData.closePosition = order.get("reduceOnly", 0).asBool();
+
+            int edgeMode = order.get("positionIdx",0).asInt();
+            ordData.posSide = edgeModesMap.at(edgeMode);
+
+            ordData.date = Utils::FormatDatetime(ordData.timestamp);
+
+            break;
+        }
+        //ordData.UpdateLocalId();
+    }
+    else
+    {
+        Json::StreamWriterBuilder builder;
+        builder["indentation"] = "";
+        LOG_IF(WARNING, verbose > 0) << Json::writeString(builder, records);
+    }
+
+    return ordData;
+}
+
+flat_set<OrderData> Bybit::BatchOrdersParserGet(const std::string& msg, const std::string& tag)
+{
+    flat_set<OrderData> orders;
+    
+    Json::Value records;
+    std::string errs;
+    bool success = false;
+    std::unique_ptr<Json::CharReader> reader;
+    Json::CharReaderBuilder rbuilder;
+    reader.reset(rbuilder.newCharReader());
+
+    if(reader->parse(msg.c_str(), msg.c_str() + msg.size(),&records, &errs) && records["retCode"].asInt() == 0)
+    {
+        for(const Json::Value& order: records["result"]["list"])
         {
             OrderData ordData;
-            ordData.exchange = "binance";
+            ordData.exchange = "bybit";
             ordData.assetClass = tag;
             ordData.local = false;
             
-            ordData.state = order.get("state", "").asString();
-            if(ordData.state.length() == 0)
-                ordData.state = order.get("status", "").asString();
-
-            ordData.instrum = order["symbol"].asString();
-            ordData.id = std::to_string(order.get("orderId",0).asInt64());
-            ordData.lid = order.get("clientOrderId","").asString();
-
-            ordData.side = order.get("side", "NONE").asString();
-            ordData.orderType = order.get("type","LIMIT").asString();
+            ordData.instrum = order.get("symbol", "").asString();
+            ordData.state = order.get("orderStatus","").asString();
+            ordData.id = order.get("orderId","").asString();
+            ordData.lid = order.get("orderLinkId","").asString();
+            ordData.local = false;
+            
+            ordData.timestamp = std::stoll(order.get("createdTime","0").asString());
+            ordData.side = order.get("side","").asString();
+            ordData.orderType = order.get("orderType","LIMIT").asString();
             ordData.price = std::stod(order.get("price", "0.0").asString());
-            ordData.stopPrice = std::stod(order.get("stopPrice", "0.0").asString());
-            ordData.quantity = std::stod(order.get("origQty", "0.0").asString());
-            ordData.execQuantity = std::stod(order.get("executedQty", "0.0").asString());
+            ordData.stopPrice = std::stod(order.get("stopLoss", "0.0").asString());
+            ordData.quantity = std::stod(order.get("qty", "0.0").asString());
+            ordData.execQuantity = std::stod(order.get("cumExecQty", "0.0").asString());
             ordData.timeInForce = order.get("timeInForce", "GTC").asString();
-            ordData.closePosition = order.get("closePosition", 0).asBool();
-            ordData.posSide = order.get("positionSide", "").asString();
             ordData.closePosition = order.get("reduceOnly", 0).asBool();
-            ordData.attrs["postOnly"] = order.get("postOnly", 0).asBool();
-            ordData.attrs["quantityScale"] = order.get("quantityScale", 0).asInt();
 
-            if(order.isMember("optionSide"))
-                ordData.posSide = order["optionSide"].asString();
-
-            if(order.isMember("updateTime"))
-                ordData.timestamp = order.get("updateTime",0).asInt64();
-
-            if(order.isMember("time"))
-                ordData.timestamp = order["time"].asInt64();
-            else if(order.isMember("transactTime"))
-                ordData.timestamp = order["transactTime"].asInt64();
-            else if(order.isMember("createTime"))
-                ordData.timestamp = order["createTime"].asInt64();
+            int edgeMode = order.get("positionIdx",0).asInt();
+            ordData.posSide = edgeModesMap.at(edgeMode);
 
             ordData.date = Utils::FormatDatetime(ordData.timestamp);
+
             //ordData.UpdateLocalId();
             orders.insert(ordData);
+            success = true;
         }
+    }
+    else
+    {
+        Json::StreamWriterBuilder builder;
+        builder["indentation"] = "";
+        LOG_IF(WARNING, verbose > 0) << Json::writeString(builder, records);
     }
 
     return orders;
 }
 
-void Binance::PositionsParser(const Json::Value& data, const std::string& tag, const std::time_t& ts)
+void Bybit::PositionsParser(const Json::Value& data, const std::string& tag, const std::time_t& ts)
 {
     try
-    {
-        const Json::Value& position = data["a"];
-        if(position.isMember("P"))
-        {            
-            for(const auto& item: position["P"])
-            {
-                PositionData posData;
-                posData.exchange = "binance";
-                posData.assetClass = tag;
-                posData.local = false;
-                posData.instrum = item["s"].asString();
-                posData.posSide = item.get("ps","").asString();
-                posData.price = std::stod(item.get("ep","0.0").asString());
-                posData.quantity = std::stod(item.get("pa","0.0").asString());
-                posData.pnl = std::stod(item.get("up","0.0").asString());
-                posData.assetClass = item.get("assetClass", tag).asString();
-                posData.leverage = item.get("leverage", 1).asInt64();
-                posData.timestamp = data["T"].asInt64();
-                posData.ltimestamp = posData.timestamp;
+    {           
+        for(const Json::Value& item: data["data"])
+        {
+            PositionData posData;
+            posData.exchange = "bybit";
+            posData.assetClass = tag;
+            posData.local = false;
 
-                posData.attrs["marginType"] = item.get("mt","");
-                posData.side = (posData.quantity > 0) ? "BUY": "SELL";
-                posData.entryDate = Utils::FormatDatetime(posData.timestamp);
-                posData.UpdateLocalId();
+            posData.instrum = item.get("symbol","").asString();
+            posData.side = item.get("side","").asString();
+            posData.price = std::stod(item.get("entryPrice","0.0").asString());
+            posData.quantity = std::stod(item.get("size","0.0").asString());
+            posData.pnl = std::stod(item.get("unrealisedPnl","0.0").asString());
+            posData.leverage = std::stoi(item.get("leverage", "1").asString());
+            posData.timestamp = std::stoll(item.get("createdTime", "0").asString());
+            posData.ltimestamp = posData.timestamp;
 
-                if(positionQueue)
-                    positionQueue->enqueue(posData);
-            }
+            posData.attrs["marginType"] = item.get("tradeMode","");
+            posData.attrs["markPrice"] = std::stod(item.get("markPrice","0.0").asString());
+            
+            int edgeMode = item.get("positionIdx",0).asInt();
+            posData.posSide = edgeModesMap.at(edgeMode);
+            posData.entryDate = Utils::FormatDatetime(posData.timestamp);
+            posData.UpdateLocalId();
+
+            if(positionQueue)
+                positionQueue->enqueue(posData);
         }
     }
     catch(std::exception& e)
@@ -2441,12 +2054,12 @@ void Binance::PositionsParser(const Json::Value& data, const std::string& tag, c
     }
 }
 
-flat_set<PositionData> Binance::PerpetualPositionParserGet(const std::string& msg, const std::string& tag)
+flat_set<PositionData> Bybit::PerpetualPositionParserGet(const std::string& msg, const std::string& tag)
 {
     flat_set<PositionData> positions;
 
     PositionData posData;
-    posData.exchange = "binance";
+    posData.exchange = "bybit";
     posData.assetClass = tag;
     posData.local = false;
 
@@ -2458,24 +2071,25 @@ flat_set<PositionData> Binance::PerpetualPositionParserGet(const std::string& ms
 
     if(reader->parse(msg.c_str(), msg.c_str() + msg.size(),&records, &errs))
     {
-        for(const auto& position: records)
+        for(const Json::Value& item: records["result"]["list"])
         {
-            posData.instrum = position["symbol"].asString();
-            posData.posSide = position["positionSide"].asString();
-            posData.price = std::stod(position["entryPrice"].asString());
-            posData.quantity = std::stod(position["positionAmt"].asString());
-            posData.pnl = std::stod(position["unRealizedProfit"].asString());
-            posData.leverage = std::stoi(position["leverage"].asString());
-            posData.timestamp = position.get("updateTime", 0).asInt64();
-            posData.entryDate = Utils::FormatDatetime(posData.timestamp);
-            posData.closeDate = Utils::FormatDatetime(posData.timestamp); // not necessarely closed
-
-            posData.attrs["liquidationPrice"] = std::stod(position.get("liquidationPrice", "0.0").asString());
-            posData.attrs["marginType"] = position.get("marginType", "").asString();
+            posData.instrum = item.get("symbol","").asString();
+            posData.side = item.get("side","").asString();
+            posData.price = std::stod(item.get("entryPrice","0.0").asString());
+            posData.quantity = std::stod(item.get("positionValue","0.0").asString());
+            posData.pnl = std::stod(item.get("unrealisedPnl","0.0").asString());
+            posData.leverage = std::stoi(item.get("leverage", "1").asString());
+            posData.timestamp = std::stoll(item.get("createdTime", "0").asString());
+            posData.ltimestamp = posData.timestamp;
             
-            posData.action = (posData.quantity > 0) ? 1: 2;
-            posData.side = (posData.quantity > 0) ? "BUY": "SELL";
-            posData.ltimestamp = posData.timestamp;
+            posData.attrs["marginType"] = item.get("tradeMode","");
+            posData.attrs["tpslMode"] = item.get("tpslMode","");
+            posData.attrs["markPrice"] = std::stod(item.get("markPrice","0.0").asString());
+            posData.attrs["liqPrice"] = std::stod(item.get("liqPrice","0.0").asString());
+            
+            int edgeMode = item.get("positionIdx",0).asInt();
+            posData.posSide = edgeModesMap.at(edgeMode);
+            posData.entryDate = Utils::FormatDatetime(posData.timestamp);
             posData.UpdateLocalId();
 
             if(posData.IsValid())
@@ -2486,54 +2100,17 @@ flat_set<PositionData> Binance::PerpetualPositionParserGet(const std::string& ms
     return positions;
 }
 
-flat_set<PositionData> Binance::OptionPositionParserGet(const std::string& msg, const std::string& tag)
+flat_set<PositionData> Bybit::OptionPositionParserGet(const std::string& msg, const std::string& tag)
 {
     flat_set<PositionData> positions;
 
-    PositionData posData;
-    posData.exchange = "binance";
-    posData.assetClass = tag;
-    posData.local = false;
-
-    Json::Value records;
-    std::string errs;
-    std::unique_ptr<Json::CharReader> reader;
-    Json::CharReaderBuilder rbuilder;
-    reader.reset(rbuilder.newCharReader());
-
-    if(reader->parse(msg.c_str(), msg.c_str() + msg.size(),&records, &errs))
-    {
-        for(const auto& position: records)
-        {
-            posData.instrum = position["symbol"].asString();
-            posData.posSide = position.get("optionSide", "").asString();
-            posData.side = position["side"].asString();
-            posData.price = std::stod(position["entryPrice"].asString());
-            posData.quantity = std::stod(position["quantity"].asString());
-            posData.pnl = std::stod(position["unRealizedProfit"].asString());
-            posData.timestamp = std::stol(position.get("expiryDate", "0").asString());
-            posData.entryDate = Utils::FormatDatetime(posData.timestamp);
-            posData.closeDate = Utils::FormatDatetime(posData.timestamp); // not necessarely closed
-
-            posData.attrs["ror"] = std::stod(position.get("ror", "0.0").asString());
-            posData.attrs["markPrice"] = std::stod(position.get("markPrice", "0.0").asString());
-            posData.attrs["strikePrice"] = std::stod(position.get("strikePrice", "0.0").asString());
-            posData.attrs["positionCost"] = std::stod(position.get("positionCost", "0.0").asString());
-
-            posData.action = (posData.quantity > 0) ? 1: 2;
-            posData.ltimestamp = posData.timestamp;
-            posData.UpdateLocalId();
-
-            if(posData.IsValid())
-                positions.insert(posData);
-        }
-    }
+    LOG(WARNING) << "Not Implemented!";
 
     return positions;
 }
 
 
-std::thread Binance::StreamParser(MessageQueue& messageQueue, size_t numThreads)
+std::thread Bybit::StreamParser(MessageQueue& messageQueue, size_t numThreads)
 {
     std::thread task([this, &messageQueue, numThreads]
     {
@@ -2561,18 +2138,11 @@ std::thread Binance::StreamParser(MessageQueue& messageQueue, size_t numThreads)
                         {
                             int64_t now = Utils::GetMilliseconds(-2000);
 
-                            std::string event;
-                            std::string stream = record.get("stream", "").asString();
-                            size_t pos = stream.find("@depth");
-                            if(pos != stream.npos && item.first == "spot")
-                            {
-                                std::string instrum = stream.substr(0,pos);
-                                std::transform(instrum.begin(), instrum.end(), instrum.begin(), ::toupper);
-                                record["data"]["e"] = "depthUpdate";
-                                record["data"]["s"] = instrum;
-                            }
-                            
-                            event = record.get("data", record)["e"].asString();
+                            // get the event name
+                            std::string event = record.get("topic", record.get("auth","")).asString();
+                            size_t pos = event.find_last_of('.');
+                            if(pos != event.npos)
+                                event = event.substr(0,pos);
 
                             // parse message using dispatcher map
                             if(dispatcherMap.count(event))
@@ -2601,36 +2171,36 @@ std::thread Binance::StreamParser(MessageQueue& messageQueue, size_t numThreads)
     return task;
 }
 
-void Binance::BindTradesQueue(ConcurrentQueue<PriceData>* queue)
+void Bybit::BindTradesQueue(ConcurrentQueue<PriceData>* queue)
 {
     priceQueue = queue;
 }
 
-void Binance::BindCandlesQueue(ConcurrentQueue<CandleData>* queue)
+void Bybit::BindCandlesQueue(ConcurrentQueue<CandleData>* queue)
 {
     candleQueue = queue;
 }
 
-void Binance::BindDepthQueue(ConcurrentQueue<Json::Value>* queue)
+void Bybit::BindDepthQueue(ConcurrentQueue<Json::Value>* queue)
 {
     depthQueue = queue;
 }
 
-void Binance::BindTickerQueue(ConcurrentQueue<TickerData>* queue)
+void Bybit::BindTickerQueue(ConcurrentQueue<TickerData>* queue)
 {
     tickerQueue = queue;
 }
 
-void Binance::BindOrderQueue(ConcurrentQueue<OrderData>* queue)
+void Bybit::BindOrderQueue(ConcurrentQueue<OrderData>* queue)
 {
     orderQueue = queue;
 }
 
-void Binance::BindPositionQueue(ConcurrentQueue<PositionData>* queue)
+void Bybit::BindPositionQueue(ConcurrentQueue<PositionData>* queue)
 {
     positionQueue = queue;
 }
 }
 
-CONNECTOR_MODULE(stelgic::Binance, "binance", "0.0.1");
+CONNECTOR_MODULE(stelgic::Bybit, "bybit", "0.0.1");
 

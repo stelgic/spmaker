@@ -42,6 +42,9 @@ endif()
 # build with jemalloc
 add_definitions(-DWITH_JEMALLOC)
 
+# build with jemalloc
+add_definitions(-DWITH_PERFORMANCE)
+
 # create install directories
 SET(BUILD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/build CACHE STRING "")
 install(DIRECTORY DESTINATION ${BUILD_DIR})
