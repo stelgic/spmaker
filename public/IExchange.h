@@ -14,6 +14,7 @@
 #include <json/json.h>
 #include <concurrentqueue.h>
 #include <cpr/cpr.h>
+#include <g3log/g3log.hpp>
 #include <websocketpp/endpoint.hpp>
 #include <websocketpp/connection.hpp>
 #include <websocketpp/config/asio_client.hpp>
@@ -88,8 +89,10 @@ public:
      * 
      * @param params 
      * @param logLevel 
+     * @param logWorker
+     * 
      */
-    virtual void Init(const Json::Value& params, int logLevel) = 0;
+    virtual void Init(const Json::Value& params, int logLevel, g3::LogWorker* logWorker) = 0;
 
     /**
      * @brief close websocket connection

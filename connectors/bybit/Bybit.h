@@ -6,15 +6,15 @@
 
 namespace stelgic
 {
-class Binance : public IExchange
+class Bybit : public IExchange
 {
 public:
-    Binance(const Binance &other) = default;
-    Binance &operator=(const Binance &other) = default;
+    Bybit(const Bybit &other) = default;
+    Bybit &operator=(const Bybit &other) = default;
 
 public:
-    Binance();
-    virtual ~Binance();
+    Bybit();
+    virtual ~Bybit();
 
     void Init(const Json::Value& params, int logLevel, g3::LogWorker* logWorker) override;
     void Close() override;
@@ -99,7 +99,7 @@ protected:
     void TickersParser(const Json::Value& data, const std::string& tag, const std::time_t& ts) override;
     void OrdersParser(const Json::Value& data, const std::string& tag, const std::time_t& ts) override;
     void PositionsParser(const Json::Value& data, const std::string& tag, const std::time_t& ts) override;
-    void ListenKeyParser(const Json::Value& data, const std::string& tag, const std::time_t& ts);
+    void AuthenticationParser(const Json::Value& data, const std::string& tag, const std::time_t& ts);
 
     OrderData OrdersParserGet(const std::string& msg, const std::string& tag);
     flat_set<OrderData> BatchOrdersParserGet(const std::string& msg, const std::string& tag);
@@ -108,7 +108,9 @@ protected:
     
     bool CancelBatchOrders(const std::string& assetClass, const std::string& privacy, 
                         const std::string& querypath, cpr::Payload& payload);
-    bool GetListenKey(const std::string& assetClass, const std::string& privacy, bool keepAlive=false);
+    bool Authentication(const std::string& connKey, 
+                        const std::string& assetClass, 
+                        const std::string& privacy);
 
     // http actions
     void HttpCommon(const std::string &baseurl, const Json::Value& configs, 
@@ -134,29 +136,33 @@ protected:
     long pingInterval;
     long recvWindow;
     long ORDERS_LIMIT;
-    long REQUEST_LIMIT;
     LiveState liveMode;
     time_t timestamp;
     
     Json::Value connParams;
     flat_set<Filter> filters;
+    Json::Value paramMapping;
+    
     size_t MAX_BATCH_ORDERS;
-
-    std::atomic<int64_t> IP_LIMIT_COUNT = ATOMIC_FLAG_INIT;
-    std::atomic<int64_t> ORDER_LIMIT_COUNT = ATOMIC_FLAG_INIT;
+    std::atomic<long> REQUEST_LIMIT = {100};
+    std::atomic<long> IP_LIMIT_COUNT = ATOMIC_FLAG_INIT;
+    std::atomic<long> ORDER_LIMIT_COUNT = ATOMIC_FLAG_INIT;
     std::atomic_bool limitResetOn = ATOMIC_FLAG_INIT;
 
     std::atomic_bool exitThread = ATOMIC_FLAG_INIT;
     std::atomic<int> verbose = ATOMIC_FLAG_INIT;
     std::atomic_flag connFlag = ATOMIC_FLAG_INIT;
 
+    // mapping position edge mode to LONG, SHORT, BOTH
+    flat_map<int, std::string> edgeModesMap;
+
     // caching connection info
     flat_map<std::string, ConnHandler::ptr> connHdlPtrsMap;
     flat_map<std::string, std::vector<WebClient::connection_ptr>> connPtrsMap;
 
-    // cache subscrition channels
-    flat_map<std::string, std::string> listenKeys;
+    // cache auth and subscrition channels
     flat_map<std::string, std::string> channelsMap;
+    std::unordered_map<std::string, std::atomic_bool> authenticationMap;
 
     // cpr Session pool
     ConcurrentQueue<std::shared_ptr<cpr::Session>> sessionPool;
@@ -168,7 +174,7 @@ protected:
     std::vector<std::thread> workers;
 
     // add function to map for each event type to avoid if else
-    typedef void (Binance::*pfunct)(const Json::Value& data, const std::string& tag, const std::time_t& ts);
+    typedef void (Bybit::*pfunct)(const Json::Value& data, const std::string& tag, const std::time_t& ts);
     flat_map<std::string, pfunct> dispatcherMap;
 
     // calbacks
