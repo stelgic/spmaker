@@ -312,7 +312,7 @@ ConnState Binance::Connect(const Json::Value& params)
             size_t pos = url.find_last_of('?');
             if(pos != url.npos)
                 query = url.substr(pos+1);
-                        
+
             con->replace_header("Accept-Encoding", "gzip,deflate,zlib");
 
             endpoint.connect(con);
