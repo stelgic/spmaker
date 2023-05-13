@@ -16,6 +16,7 @@ public:
     ExecutionManager(double maxCapital, double riskPercentage, int verbosity) 
         : capital(maxCapital), riskLimit(riskPercentage), usedCapital(0.0), verbose(verbosity)
     {
+        // map order state to method
         dispatcherMap["NEW0"] = (pfunct)&ExecutionManager::UpdateOpeningPosition;
         dispatcherMap["FILLED0"] = (pfunct)&ExecutionManager::UpdateOpenedPosition;
         dispatcherMap["PARTIALLY_FILLED0"] = (pfunct)&ExecutionManager::UpdateOpenedPosition;
@@ -26,14 +27,25 @@ public:
         dispatcherMap["CANCELED1"] = (pfunct)&ExecutionManager::UpdateCancelClosing;
         dispatcherMap["EXPIRED0"] = (pfunct)&ExecutionManager::UpdateCancelOpening;
         dispatcherMap["EXPIRED1"] = (pfunct)&ExecutionManager::UpdateCancelClosing;
+
+        // bybit order status
+        orderStatusMap.emplace("New","NEW");
+        orderStatusMap.emplace("Created","NEW");
+        orderStatusMap.emplace("Rejected","REJECTED");
+        orderStatusMap.emplace("Filled","FILLED");
+        orderStatusMap.emplace("PartiallyFilled","PARTIALLY_FILLED");
+        orderStatusMap.emplace("Deactivated","EXPIRED");
+        orderStatusMap.emplace("Cancelled","CANCELED");
     }
 
     virtual ~ExecutionManager() {}
 
     void Update(const OrderData& primary, const OrderData& secondary)
     {
-        std::string event;
-        event.append(primary.state);
+        std::string event = primary.state;
+        // try to map order state
+        if(orderStatusMap.count(primary.state))
+            event = orderStatusMap.at(primary.state);
         event.append(std::to_string((int)primary.closePosition));
 
         if(dispatcherMap.count(event))
@@ -169,6 +181,13 @@ public:
         LOG_IF(INFO, verbose > 1) << "CAPITAL=" << capital << " " << "USED_CAPITAL=" << usedCap;
     }
 
+    std::string GetMappedState(const std::string& state)
+    {
+        if(orderStatusMap.count(state))
+            return orderStatusMap.at(state);
+        return state;
+    }
+
 protected:
     void UpdateOpeningPosition(const OrderData& order, const OrderData& dummy)
     {
@@ -248,7 +267,7 @@ protected:
         openOrders.erase(order);
         execLock.Unlock();
     }
-
+    
 private:
     int verbose;
     double riskLimit;
@@ -263,6 +282,8 @@ private:
     flat_set<std::string> cancelingRequests;
     flat_map<std::string, flat_set<PositionData>> openPositions;
     flat_map<std::string, flat_set<std::string>> positionsOrderIds;
+
+    flat_map<std::string,std::string> orderStatusMap;
 
     // add function to map for each event type to avoid if else
     typedef void (ExecutionManager::*pfunct)(const OrderData& primary, const OrderData& secondary);

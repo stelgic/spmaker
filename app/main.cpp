@@ -8,11 +8,13 @@
 #include "public/LogHelper.h"
 #include "public/JsonHelper.h"
 #include "public/SpinLock.h"
+#include "public/TradeStatistics.h"
 
 namespace fs = std::filesystem;
 namespace po = boost::program_options;
 using namespace stelgic;
 
+std::string exchange;
 int verbosity = 1;
 int NUM_THREADS = 8;
 int capital = 5000;
@@ -40,6 +42,7 @@ bool getCommandLineArgs(int argc, char** argv)
 
     desc.add_options()
     ("help,h", "produce help message")
+    ("exchange,e", po::value<std::string>(&exchange), "connector/exchange name")
     ("risk,r", po::value<double>(&riskLimit)->default_value(0.1), "capital to risk percentage per trade")
     ("capital,c", po::value<int>(&capital)->default_value(6000), "max capital in USD")
     ("threads,t", po::value<int>(&NUM_THREADS)->default_value(8), "num threads to process data")
@@ -92,11 +95,23 @@ int main(int argc, char** argv)
 
     bool success = false;
     std::string err;
+    std::string filename("../modules/");
 #if defined(_WIN32) || defined(_WIN64)
-    std::string MODULE_PATH = fs::canonical(std::string("../modules/binance.dll")).string();
+    filename.append(exchange);
+    filename.append(".dll");
 #elif defined(__linux__)
-    std::string MODULE_PATH = fs::canonical(std::string("../modules/libbinance.so")).string();
+    filename.append("lib").append(exchange);
+    filename.append(".so");
 #endif
+
+    if(!fs::exists(filename))
+    {
+        LOG(WARNING) << "Failed to load "<< filename;
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        _Exit(EXIT_FAILURE);
+    }
+
+    std::string MODULE_PATH = fs::canonical(filename).string();
     std::string CONFIG_PATH = fs::canonical(std::string("../configs/connector.config")).string();
 
     ModuleLoader<IExchange> module(MODULE_PATH);
@@ -138,13 +153,13 @@ int main(int argc, char** argv)
 
     // Initiliaze connector
     LOG(INFO) << "Initializing...";
-    connector->Init(connParams["binance"], verbosity);
+    connector->Init(connParams[exchange], verbosity, logworker.get());
     if(!connector->IsInitialized())
     {
         LOG(WARNING) << "Failed to Initialize connector";
         std::this_thread::sleep_for(std::chrono::seconds(2));
         _Exit(EXIT_FAILURE);
-    } 
+    }
     
     SpinLock tickerLock;
     bool resetLimitOn = false;
@@ -153,12 +168,14 @@ int main(int argc, char** argv)
     
     std::vector<std::thread> workers;
     flat_set<TickerData> instrumTickers;
-    ExecutionManager execManager(capital, riskLimit, verbosity);
+    flat_map<std::string, int64_t> newOrdersTimeMap;
 
+    TradeStats tradeStats;
+    ExecutionManager execManager(capital, riskLimit, verbosity);
     const auto& filters = connector->GetFilters();
 
     // check if need to subscribe all symbols
-    Json::Value& publicParams = connParams["binance"]["websocket"]["public"];
+    Json::Value& publicParams = connParams[exchange]["websocket"]["public"];
     for(const Json::Value& item: publicParams["instruments"])
     {
         if(item.asString() == "*")
@@ -224,6 +241,7 @@ int main(int argc, char** argv)
                     // dispatch create order 5 per request
                     boost::asio::dispatch(pool, [&, ticker]()
                     {
+                        auto starttime = std::chrono::system_clock::now();
                         double price = (ticker.bid + iter->stepSize);
                         
                         // create buy open order
@@ -238,9 +256,15 @@ int main(int argc, char** argv)
                         postOrder["quantity"] = (riskAmount / price);
                         
                         OrderData order = connector->NewPerpetualOrder(postOrder);
+#ifdef WITH_PERFORMANCE
+                        tradeStats.UpdateNewOrderStats(order, starttime);
+#endif
                         if(order.IsValid())
+                        {
+                            // update order cache
                             execManager.Update(order, order);
-                        else
+                        }
+                        else if(order.id.empty())
                             execManager.UpdateUsedCapital(-riskAmount);
                         
                         --usedCounter;
@@ -268,6 +292,8 @@ int main(int argc, char** argv)
                             // dispatch create order 5 per request
                             boost::asio::dispatch(pool, [&, ticker, order]()
                             {
+                                auto starttime = std::chrono::system_clock::now();
+
                                 Filter filter;
                                 filter.instrum = ticker.instrum;
                                 auto iter = filters.find(filter);
@@ -285,8 +311,14 @@ int main(int argc, char** argv)
                                 reduceOrder["quantity"] = order.execQuantity;
                                 
                                 OrderData closeOrder = connector->NewPerpetualOrder(reduceOrder);
-                                if(order.IsValid())
+#ifdef WITH_PERFORMANCE
+                                tradeStats.UpdateNewOrderStats(order, starttime);
+#endif
+                                if(closeOrder.IsValid())
+                                {
+                                    // update orders cache
                                     execManager.Update(closeOrder, order);
+                                }
 
                                // --usedCounter;
                             });
@@ -299,6 +331,8 @@ int main(int argc, char** argv)
                     LOG_IF(WARNING, verbosity > 0) << "Hit Request Limit!";
                     connector->ResetRequestLimitTimer(61000);
                     resetLimitOn = true;
+
+                    tradeStats.LogBenchmarks();
                 }
                 
                 resetLimitOn = hitRequestLimit;
@@ -326,9 +360,13 @@ int main(int argc, char** argv)
             {
                 OrderData order(orders[j]);
                 
-                // dispatch create order 5 per request
-                execManager.Update(order, order);
+#ifdef WITH_PERFORMANCE
+                std::string ordState = execManager.GetMappedState(order.state);
+                tradeStats.UpdateOrderStats(order, ordState);
+#endif
 
+                execManager.Update(order, order);
+                
                 LOG_IF(INFO, verbosity > 0) << order;
             }
         }
@@ -357,7 +395,10 @@ int main(int argc, char** argv)
                     std::chrono::milliseconds(epoch) - std::chrono::milliseconds(order.timestamp));
 
                 bool cancelRequest = execManager.IsCancelRequested(order);
-                if(!cancelRequest && order.state == "NEW" && elapsed.count() > ORDER_TIMEOUT)
+                std::string orderState = execManager.GetMappedState(order.state);
+                if(!cancelRequest && orderState == "NEW" && 
+                    elapsed.count() > ORDER_TIMEOUT && 
+                    !connector->IsRequestLimitHit())
                 {
                     execManager.CancelRequest(order);
 
@@ -375,9 +416,7 @@ int main(int argc, char** argv)
                         execManager.ClearCancelRequest(order);
                     });
                 }
-                else if(order.state == "FILLED" || 
-                    order.state == "CANCELED" || 
-                    order.state == "EXPIRED")
+                else if(orderState == "FILLED" || orderState == "CANCELED" || orderState == "EXPIRED")
                 {
                     execManager.Update(order, order);
                 }
@@ -396,7 +435,7 @@ int main(int argc, char** argv)
     workers.push_back(connector->KeepAlive());
 
     // connect and subscribe to exchange 
-    ConnState state = connector->Connect(connParams["binance"]);
+    ConnState state = connector->Connect(connParams[exchange]);
     if(state != ConnState::Opened)
     {
         LOG(WARNING) << "Failed to connect exchange";
@@ -409,7 +448,7 @@ int main(int argc, char** argv)
     std::this_thread::sleep_for(std::chrono::seconds(5));
 
     // subscribe to websocket channels
-    connector->Subscribe(connParams["binance"]);
+    connector->Subscribe(connParams[exchange]);
 
     for(auto& task: workers)
         task.join();

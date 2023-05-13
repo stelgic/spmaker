@@ -61,4 +61,7 @@ cd build/bin
 ./spmaker --risk 0.2 --capital 5000 --threads 8 --timeout 2 -v 1
 ```
 
+#### License
+
+* Licensed under [CC BY-NC-ND 4.0](LICENSE.md)
 
