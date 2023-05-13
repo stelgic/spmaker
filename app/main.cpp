@@ -97,11 +97,9 @@ int main(int argc, char** argv)
     std::string err;
     std::string filename("../modules/");
 #if defined(_WIN32) || defined(_WIN64)
-    filename.append(exchange);
-    filename.append(".dll");
+    filename.append(exchange).append(".dll");
 #elif defined(__linux__)
-    filename.append("lib").append(exchange);
-    filename.append(".so");
+    filename.append("lib").append(exchange).append(".so");
 #endif
 
     if(!fs::exists(filename))
@@ -135,10 +133,6 @@ int main(int argc, char** argv)
         _Exit(EXIT_FAILURE);
     }
 
-    /** ########################################################
-     * @brief initialize and connector with configs
-     * ########################################################
-     */
     // Load exchange json configure file
     Json::Value connParams = LoadJsonFromFile(CONFIG_PATH, err);
     if(connParams.isNull())
@@ -150,6 +144,11 @@ int main(int argc, char** argv)
 
     // update num session to match dispatcher
     connParams["numSessions"] = (NUM_THREADS * 2);
+
+    /** ########################################################
+     * @brief initialize and connector with configs
+     * ########################################################
+     */
 
     // Initiliaze connector
     LOG(INFO) << "Initializing...";
