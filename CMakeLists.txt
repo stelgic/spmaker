@@ -16,6 +16,8 @@ SET(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -Wall -03 -flto -march=n
 SET(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Wall")
 
 cmake_policy(SET CMP0086 NEW)   # Install CODE|SCRIPT allow the use of generator expressions.
+set(Boost_USE_STATIC_LIBS ON)
+set(Boost_USE_STATIC_RUNTIME ON)
 
 if(WIN32)
     message(STATUS "Building for Windows OS")
