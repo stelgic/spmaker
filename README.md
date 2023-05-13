@@ -9,9 +9,10 @@ flexible archichture that can be easy deployed on multi exchanges or brokers
 
 * Linux, Windows
 
-##### Available exchanges/brokers
+##### Available connectors (exchanges/brokers)
 
 * Binance
+* Bybit
 
 ##### BUILD Dependencies
 
