@@ -33,6 +33,7 @@
 *.pdb
 *.dir/
 *.sln
+*.exp
 *.vcxproj
 *.vcxproj.*
 
