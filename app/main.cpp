@@ -311,7 +311,7 @@ int main(int argc, char** argv)
                                 
                                 OrderData closeOrder = connector->NewPerpetualOrder(reduceOrder);
 #ifdef WITH_PERFORMANCE
-                                tradeStats.UpdateNewOrderStats(order, starttime);
+                                tradeStats.UpdateNewOrderStats(closeOrder, starttime);
 #endif
                                 if(closeOrder.IsValid())
                                 {

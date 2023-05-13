@@ -32,19 +32,27 @@ public:
     {
         if(!order.id.empty())
         {
-            // compute the request time to place new order
-            auto endtime = std::chrono::system_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(endtime - starttime);
             // update statistics map
             statsLock.Lock();
             std::string ordState = "NEW";
             ++statistics.at(ordState);
-            ordState.append("_ELAPSED");
-            statistics.at(ordState) += elapsed.count();
 
-            int64_t crttime = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                endtime.time_since_epoch()).count();
-            newOrdersTimeMap.insert_or_assign(order.id, crttime);
+            // if order is valide compute latency immediate
+            // bybit only returns order ids without others params
+            if(order.IsValid())
+            {
+                newOrders.insert(order.id);
+
+                // compute the request time to place new order
+                auto endtime = std::chrono::system_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(endtime - starttime);
+                ordState.append("_ELAPSED");
+                statistics.at(ordState) += elapsed.count();
+            }
+
+            int64_t stepoch = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                starttime.time_since_epoch()).count();
+            newOrdersTimeMap.insert_or_assign(order.id, stepoch);
 
             statsLock.Unlock();
         }
@@ -56,38 +64,42 @@ public:
         int64_t currtime = std::chrono::duration_cast<std::chrono::milliseconds>(
                                                     now.time_since_epoch()).count();
         statsLock.Lock();
-        if((ordState == "NEW") && newOrdersTimeMap.count(order.id) == 0)
+        if(ordState == "NEW" && newOrdersTimeMap.count(order.id) && newOrders.count(order.id) == 0)
         {
+            newOrders.insert(order.id);
+            int64_t newtime = newOrdersTimeMap.at(order.id);
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::milliseconds(currtime) - std::chrono::milliseconds(order.timestamp));
+                std::chrono::milliseconds(currtime) - std::chrono::milliseconds(newtime));
 
-            ++statistics.at(ordState);
+            //++statistics.at(ordState);
             ordState.append("_ELAPSED");
             statistics.at(ordState) += elapsed.count();
-            newOrdersTimeMap.insert_or_assign(order.id, order.timestamp);
         }
         else if(ordState == "PARTIALLY_FILLED" && partialFilledOrders.count(order.id) == 0)
         {
             ++statistics.at(ordState);
             partialFilledOrders.insert(order.id);
+            newOrders.erase(order.id);
         }
         else if(ordState == "FILLED" && newOrdersTimeMap.count(order.id))
         {
-            auto crttime = newOrdersTimeMap.at(order.id);
+            int64_t newtime = newOrdersTimeMap.at(order.id);
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::milliseconds(currtime) - std::chrono::milliseconds(crttime));
+                std::chrono::milliseconds(currtime) - std::chrono::milliseconds(newtime));
 
             ++statistics.at(ordState);
             ordState.append("_ELAPSED");
             statistics.at(ordState) += elapsed.count();
             newOrdersTimeMap.erase(order.id);
             partialFilledOrders.erase(order.id);
+            newOrders.erase(order.id);
         }
         else if(ordState == "CANCELED" || ordState == "EXPIRED" || ordState == "REJECTED")
         {
             ++statistics.at(ordState);
             newOrdersTimeMap.erase(order.id);
             partialFilledOrders.erase(order.id);
+            newOrders.erase(order.id);
         }
         statsLock.Unlock();
     }
@@ -111,11 +123,12 @@ public:
             << "\tREJECTED=" << statistics.at("REJECTED")
             << "\tEXPIRED=" << statistics.at("EXPIRED");
 
-        LOG(INFO) << "NEW_ELAPSED=" << newElapsed << "ms"
-            << "\tFILLED_ELAPSED=" << filledElapsed << "ms\n\n";
+        LOG(INFO) << "NEW_ELAPSED_AVG=" << newElapsed << "ms"
+            << "\tFILLED_ELAPSED_AVG=" << filledElapsed << "ms\n\n";
     }
 
 public:
+    flat_set<std::string> newOrders;
     flat_set<std::string> partialFilledOrders;
     flat_map<std::string, int64_t> newOrdersTimeMap;
     std::unordered_map<std::string,std::atomic<int64_t>> statistics;
