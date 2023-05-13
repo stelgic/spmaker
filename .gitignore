@@ -32,6 +32,7 @@
 *.app
 *.pdb
 *.dir/
+*.sln
 *.vcxproj
 *.vcxproj.*
 
